@@ -17,6 +17,9 @@
     "ci": "pnpm -r test && pytest && pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && ruff check packages/ services/ && mypy services/pipeline-svc/src services/sinks-svc/src",
     "lint": "pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && ruff check packages/ services/",
     "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && mypy services/pipeline-svc/src services/sinks-svc/src",
+    "test:e2e": "pytest tests/e2e",
+    "benchmark": "python tools/benchmark.py",
+    "airgap:check": "python tools/check_airgap.py",
     "verify:live": "python tools/verify_live.py"
   }
 }

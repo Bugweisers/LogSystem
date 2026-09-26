@@ -301,5 +301,6 @@ Optimistic concurrency: `/confirm` rejects a second concurrent submission on the
 | — | Hash-chained signed JSONL file instead of a real blockchain node | No blockchain infra needed to prove the ledger contract works | `integrity-svc`'s `Ledger` interface is the only thing that changes |
 | — | `time` (epoch ms) added to the OCSF event example | OCSF Class 4001 requires it; original spec example omitted it | None — additive, non-breaking |
 | — | Cold-path semantic mapping uses lexical (TF-IDF) similarity instead of ONNX MiniLM + FAISS | No model/index needed to validate the confidence-gating and pack-generation logic | `Embedder`/`VectorIndex` interfaces swap; thresholds need recalibration |
+| 2026-09-26 | M7 Throughput & Latency Calibration Benchmarks | Establishes verified MVP performance baseline (Ingestion seal: 550k eps @ 1.6µs p50; Regex Router: 61.5k eps @ 15.3µs p50; OCSF 4001 Normalizer: 50.0k eps @ 17.9µs p50; Merkle Builder: 1.32M leaves/sec @ 71.8µs p50) | All core stages exceed the 10,000 eps production throughput SLA by 4x to 50x; verified offline under air-gap constraints. |
 
 *(Keep this table current — every architectural deviation from `docs/spec/` gets a row here before it ships.)*

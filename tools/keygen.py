@@ -50,7 +50,7 @@ def generate_keypair(output_dir: Path) -> None:
     priv_path.write_bytes(priv_pem)
     pub_path.write_bytes(pub_pem)
 
-    print(f"Ed25519 dev keypair generated:")
+    print("Ed25519 dev keypair generated:")
     print(f"  Private key: {priv_path}")
     print(f"  Public key:  {pub_path}")
     print()

@@ -1,0 +1,31 @@
+# Docker Compose override for strictly isolated Air-Gap environments (M7).
+# Ensures zero outbound network ingress/egress beyond the local container boundary.
+services:
+  ingestion-svc:
+    networks:
+      ulpf-airgap-net:
+
+  integrity-svc:
+    networks:
+      ulpf-airgap-net:
+
+  pipeline-svc:
+    networks:
+      ulpf-airgap-net:
+
+  sinks-svc:
+    networks:
+      ulpf-airgap-net:
+
+  review-api:
+    networks:
+      ulpf-airgap-net:
+
+  review-ui:
+    networks:
+      ulpf-airgap-net:
+
+networks:
+  ulpf-airgap-net:
+    driver: bridge
+    internal: true

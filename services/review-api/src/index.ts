@@ -236,7 +236,23 @@ app.post("/queue/clusters/:cluster_id/confirm", (req, res) => {
     "UPDATE review_queue SET status='confirmed', assigned_analyst=?, confirmed_mapping=?, resolved_at=? WHERE cluster_id=?"
   ).run(actor, JSON.stringify(confirmed_mapping ?? {}), now, cluster_id);
 
-  return res.json({ ok: true, cluster_id, status: "confirmed" });
+  const cleanCluster = cluster_id.replace(/[^a-zA-Z0-9_]/g, "_");
+  const packId = `pack_${cleanCluster}_v1.0.0`;
+  const eventHash = `hash_${Date.now()}`;
+
+  db.prepare(`
+    INSERT INTO mapping_packs (
+      pack_id, version, source_type, pack_yaml_hash, signature, signer_key_id, status, created_at, promoted_at
+    ) VALUES (?, '1.0.0', ?, 'hash_confirmed', 'sig_analyst_confirmed', 'dev_signing', 'active', ?, ?)
+    ON CONFLICT(pack_id) DO UPDATE SET status = 'active', promoted_at = excluded.promoted_at
+  `).run(packId, cluster_id, now, now);
+
+  db.prepare(`
+    INSERT INTO pack_lifecycle_events (pack_id, event_type, actor, event_hash, occurred_at)
+    VALUES (?, 'pack_confirmed', ?, ?, ?)
+  `).run(packId, actor, eventHash, now);
+
+  return res.json({ ok: true, cluster_id, pack_id: packId, status: "confirmed", event_hash: eventHash });
 });
 
 app.post("/queue/clusters/:cluster_id/reject", (req, res) => {

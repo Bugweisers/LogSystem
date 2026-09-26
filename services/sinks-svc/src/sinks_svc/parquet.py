@@ -131,7 +131,7 @@ class ParquetLakeWriter:
             },
             "metadata": {
                 "version": metadata.get("version"),
-                "uid": metadata.get("uid"),
+                "uid": str(metadata.get("uid")) if metadata.get("uid") is not None else None,
                 "product": {
                     "vendor_name": product.get("vendor_name"),
                     "name": product.get("name"),

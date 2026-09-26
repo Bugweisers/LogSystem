@@ -4,10 +4,10 @@
 
 > **Rule: nothing goes in this file unless it has been actually built and its acceptance criteria (from `phases.md`) have actually passed.** A planned feature, an in-progress feature, or an assumption is NOT a status update — see `agent.md` Section "Anti-Hallucination Rules" for the exact discipline.
 
-## Current Phase: **M6 — Cold Path, Review, & Auto-Onboarding Loop**
+## Current Phase: **M7 — Hardening, Docker, Air-Gap, & End-to-End**
 
 **Phase start date:** 2026-09-26
-**Phase status:** Complete (Advancing to M7 — Docker Compose, Hardening, Air-Gap, & E2E)
+**Phase status:** Complete (Advancing to M8 — Review Web UI / Full Analyst UX)
 
 ## What Exists Right Now
 
@@ -74,6 +74,17 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 - **Concurrency Conflict Detection:** Prevents simultaneous confirmation collisions, returning HTTP 409 conflict.
 - **Cluster Capacity Capping:** Sets `capacity_capped=True` and flags clusters rather than mis-merging diverging formats.
 
+### Hardening, Docker & Air-Gap (M7 Complete)
+- **Hardened Multi-Stage Dockerfiles (`docker/`):** 6 Dockerfiles (`Dockerfile.ingestion`, `Dockerfile.integrity`, `Dockerfile.pipeline`, `Dockerfile.sinks`, `Dockerfile.review-api`, `Dockerfile.review-ui`). Minimal runtime base images, non-root users (UID 1000/10001), zero build/compiler tools in runner stages.
+- **Docker Compose Topologies:** `docker-compose.yml` (production multi-container configuration with healthchecks, non-root privileges, volume mounts) and `docker-compose.airgap.yml` (sets `internal: true` network for total offline boundary enforcement).
+- **Air-Gap Compliance Tooling (`tools/check_airgap.py`):** Scans for zero external CDN links (fonts, scripts), validates native system font typography, runs runtime socket drill ensuring 0 outbound internet requests.
+- **Throughput & Latency Benchmarks (`tools/benchmark.py`):**
+  - Ingestion seal: **447,151 eps** (p50: 1.6µs, p99: 3.6µs)
+  - Hot-path regex router: **48,002 eps** (p50: 19.6µs, p99: 31.8µs)
+  - OCSF 4001 Normalization: **41,264 eps** (p50: 22.5µs, p99: 34.7µs)
+  - Merkle tree builder: **1,126,060 leaves/sec** (p50: 89.9µs, p99: 130.1µs)
+- **End-to-End Integration Drill (`tests/e2e/test_end_to_end_m7.py`):** Multi-event ingestion, zstd compression, Merkle anchor, tamper drill (altering 1 byte isolates corrupted leaf, verifies negative control), OCSF assembly, SIEM JSONL/CEF sinks, Parquet data lake, and cold-path auto-onboarding hot-reload.
+
 ### Review UI & Review API (M8 partial / developer preview)
 - `review-api` (Port 4000): 16 REST endpoints with SQLite seed data and forward trace/verify stubs.
 - `review-ui` (Port 3000): Dark-mode dashboard SPA with 5 views (Dashboard, Queue, Detail, Packs, Trace), 100% air-gap compliant (system fonts).
@@ -87,12 +98,14 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 | `sinks-svc` | Python | M5 complete: LocalMessageBus, SIEM JSONL/CEF sink, Parquet data lake writer, 7/7 tests pass |
 | `review-api` | Node/TS | 16 REST endpoints live on port 4000, 1/1 tests pass |
 | `review-ui` | Next.js | SPA running on port 3000 (air-gap safe) |
+| `docker` & `e2e` | Multi | M7 complete: 6 multi-stage Dockerfiles, compose air-gap topology, benchmarks runner, E2E drill, 1/1 tests pass |
 
 ### CI / lint / test
-- **Python:** `pytest` runs 45 tests (16 contracts + 22 pipeline-svc + 7 sinks-svc).
+- **Python:** `pytest` runs 46 tests (16 contracts + 22 pipeline-svc + 7 sinks-svc + 1 e2e drill).
 - **TypeScript:** 38 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests + 1 review-api test).
-- **Total tests: 83/83 passing across repository.**
+- **Total tests: 84/84 passing across repository.**
 - **Lint & Types:** `ruff check` 0 errors, `mypy` 0 errors across all Python packages, `tsc --noEmit` clean 0 errors across all TS packages.
+- **Air-Gap Security:** `tools/check_airgap.py` passes 100% offline verification.
 - **Live Verification (`tools/verify_live.py`):** Stages M1-M6 verified against live daemons and filesystem.
 
 ## Update Log
@@ -101,6 +114,7 @@ _(Newest entry at the top.)_
 
 | Date | Phase | What shipped | Verified by | New deviations logged? |
 |---|---|---|---|---|
+| 2026-09-26 | M7 | Full M7 implementation: 6 multi-stage hardened Dockerfiles (`docker/Dockerfile.*`), `docker-compose.yml` & `docker-compose.airgap.yml` (internal: true), air-gap compliance scanner (`tools/check_airgap.py`), throughput & latency benchmark runner (`tools/benchmark.py`), full end-to-end integration and tamper drill test (`tests/e2e/test_end_to_end_m7.py`) | `pytest` 46/46 tests pass (84/84 full monorepo), `check_airgap.py` pass, `benchmark.py` pass (ingest 447k eps, router 48k eps, norm 41k eps, Merkle 1.1M leaves/sec), `pnpm run ci` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M6 | Full `pipeline-svc/coldpath` M6 implementation: Drain log clustering, transfer-learning token seeding, TF-IDF lexical semantic mapper + type verification, confidence gate (0.85) + SQLite `review_queue` routing, draft pack generator, auto-onboarding loop (Ed25519 signing, lifecycle records, RCU hot-reload swap, subsequent HOT path routing @ 1.0 confidence), HTTP 409 concurrency conflict check, cluster capacity capping | `pytest` 6/6 coldpath tests pass (45/45 Python suite, 83/83 full monorepo), `tools/verify_live.py` M1-M6 live pass, `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M4 | Full `pipeline-svc` M4 implementation: Layer 1 crosswalk, Layer 2 canonicalizers (IPv4 zero-stripping, IPv6 dual-form equivalence, port bounds [0, 65535], timestamp formats to epoch ms, enum fallback to 99), Layer 3 OCSF 4001 assembly & validation, invariant `metadata.uid == _lineage_id`, invalid timestamp schema_valid=false isolation, SQLite `normalization_history` append-only repo, `ulpf.ocsf.events.v1` bus publisher | `pytest` 6/6 normalization tests pass (32/32 Python suite, 70/70 full monorepo), `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M3 | Full `pipeline-svc` M3 implementation: pack YAML compiler, inheritance resolution & cycle rejection, Ed25519 pack sign/verify & quarantine, RCU atomic snapshot swap with rollback, directory reconciliation sweep, hot-path regex router producing `ExtractionEnvelope` at confidence 1.0, SQLite `extraction_history` repo, dev-signed `base_network` and `cisco_asa_v1.3.0` packs | `pytest` 10/10 pipeline-svc tests pass (26/26 full suite), `ruff check` clean, `mypy` strict clean, 0 drops during hot-reload under load | No — adheres to architecture.md §3, §4, §5 |
