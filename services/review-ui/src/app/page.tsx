@@ -380,11 +380,486 @@ function FieldMappingRow({ field, info, override, onChange, readonly }: FieldMap
   );
 }
 
+// --- Universal Log CSV Ingestion Component -----------------------------------
+
+interface IngestResultRecord {
+  lineage_id: string;
+  sha256_hash: string;
+  source_ip?: string;
+  source_port?: number;
+  transport_protocol?: string;
+  raw_size_bytes?: number;
+  storage_pointer?: string;
+  chunk_id?: string;
+  ingestion_timestamp?: string;
+  path_taken?: "HOT" | "COLD" | string;
+  source_type?: string;
+  extracted_fields?: Record<string, unknown>;
+  confidence_scores?: Record<string, number>;
+  cluster_id?: string;
+  review_status?: string;
+  ocsf_class_uid?: number;
+  schema_valid?: number | boolean;
+  sample_preview?: string;
+}
+
+interface IngestCsvResponse {
+  ok: boolean;
+  filename: string;
+  total_rows: number;
+  ingested_count: number;
+  chunks: string[];
+  summary: {
+    total: number;
+    hot_path_count: number;
+    cold_path_count: number;
+    raw_stored_count: number;
+  };
+  records: IngestResultRecord[];
+}
+
+const SAMPLE_DATASETS: Record<string, { label: string; desc: string; csv: string }> = {
+  cisco_asa: {
+    label: "\uD83D\uDEE1\uFE0F Cisco ASA Firewall",
+    desc: "HOT path firewall deny/permit events matching compiled Cisco ASA pack",
+    csv: `timestamp,source_ip,destination_ip,protocol,action,raw_log
+2026-09-27T01:00:00Z,192.168.1.105,8.8.8.8,TCP,Deny,<164>Sep 27 2026 01:00:00: %ASA-4-106023: Deny tcp src outside:192.168.1.105/51234 dst inside:8.8.8.8/443 by access-group "acl_outside"
+2026-09-27T01:00:05Z,192.168.1.106,1.1.1.1,UDP,Deny,<164>Sep 27 2026 01:00:05: %ASA-4-106023: Deny udp src outside:192.168.1.106/49821 dst inside:1.1.1.1/53 by access-group "acl_outside"
+2026-09-27T01:00:10Z,192.168.1.107,8.8.4.4,TCP,Deny,<164>Sep 27 2026 01:00:10: %ASA-4-106023: Deny tcp src outside:192.168.1.107/60122 dst inside:8.8.4.4/80 by access-group "acl_outside"`,
+  },
+  nginx: {
+    label: "\uD83C\uDF10 Nginx Web Access",
+    desc: "Web traffic HTTP requests",
+    csv: `timestamp,client_ip,status,method,path,raw_log
+2026-09-27T01:05:00Z,172.16.0.45,200,GET,/api/v1/health,172.16.0.45 - - [27/Sep/2026:01:05:00 +0000] "GET /api/v1/health HTTP/1.1" 200 64 "-" "curl/7.81.0"
+2026-09-27T01:05:02Z,172.16.0.46,404,GET,/admin/login,172.16.0.46 - - [27/Sep/2026:01:05:02 +0000] "GET /admin/login HTTP/1.1" 404 280 "-" "Mozilla/5.0"
+2026-09-27T01:05:04Z,172.16.0.47,500,POST,/checkout,172.16.0.47 - - [27/Sep/2026:01:05:04 +0000] "POST /checkout HTTP/1.1" 500 120 "-" "python-requests/2.31"`,
+  },
+  juniper: {
+    label: "\u26A1 Juniper SRX (Cold Path)",
+    desc: "Unmapped format demonstrating automatic Drain clustering into Review Queue",
+    csv: `timestamp,host,action,raw_log
+2026-09-27T01:10:00Z,juniper-gw-01,drop,RT_FLOW: RT_FLOW_SESSION_DENY: session denied 10.20.1.5/45678->198.51.100.1/22 None None 6(0) default:untrust-zone default:trust-zone UNKNOWN UNKNOWN N/A(N/A) ge-0/0/0.0
+2026-09-27T01:10:02Z,juniper-gw-01,drop,RT_FLOW: RT_FLOW_SESSION_DENY: session denied 10.20.1.6/45679->198.51.100.2/80 None None 6(0) default:untrust-zone default:trust-zone UNKNOWN UNKNOWN N/A(N/A) ge-0/0/0.0
+2026-09-27T01:10:04Z,juniper-gw-02,drop,RT_FLOW: RT_FLOW_SESSION_DENY: session denied 10.20.1.7/45680->198.51.100.3/443 None None 6(0) default:untrust-zone default:trust-zone UNKNOWN UNKNOWN N/A(N/A) ge-0/0/0.0`,
+  },
+  structured_kv: {
+    label: "\uD83D\uDCCA Structured Key-Value CSV",
+    desc: "Tabular columns converted to standard universal log event strings",
+    csv: `timestamp,src_ip,dst_ip,src_port,dst_port,protocol,action,rule
+2026-09-27T01:15:00Z,10.0.5.10,192.0.2.1,51000,443,tcp,deny,block-outbound
+2026-09-27T01:15:01Z,10.0.5.11,192.0.2.2,51001,80,tcp,allow,allow-http
+2026-09-27T01:15:02Z,10.0.5.12,192.0.2.3,51002,53,udp,deny,block-dns`,
+  },
+};
+
+function LogCsvUploader({
+  onTrace,
+  onIngested,
+}: {
+  onTrace?: (id: string) => void;
+  onIngested?: () => void;
+}) {
+  const [csvText, setCsvText] = useState<string>("");
+  const [filename, setFilename] = useState<string>("universal_logs.csv");
+  const [uploading, setUploading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<IngestCsvResponse | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<boolean>(false);
+  const [showRawPaste, setShowRawPaste] = useState<boolean>(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Parse lines for preview
+  const rawLines = csvText.split(/\r?\n/).filter(l => l.trim().length > 0);
+  const previewRows = rawLines.slice(0, 4);
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFilename(file.name);
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const content = String(evt.target?.result ?? "");
+      setCsvText(content);
+      setError(null);
+      setResult(null);
+    };
+    reader.readAsText(file);
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    setFilename(file.name);
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const content = String(evt.target?.result ?? "");
+      setCsvText(content);
+      setError(null);
+      setResult(null);
+    };
+    reader.readAsText(file);
+  }
+
+  function loadPreset(key: keyof typeof SAMPLE_DATASETS) {
+    const item = SAMPLE_DATASETS[key];
+    if (!item) return;
+    setFilename(`${key}_sample.csv`);
+    setCsvText(item.csv.trim());
+    setError(null);
+    setResult(null);
+  }
+
+  async function handleIngest() {
+    if (!csvText.trim()) {
+      setError("Please select a CSV file or paste log content first.");
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/ingest/csv`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv_content: csvText, filename }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error?.message || `HTTP ${res.status}`);
+      }
+      setResult(data as IngestCsvResponse);
+      onIngested?.();
+    } catch (err: any) {
+      setError(err.message || "Failed to submit logs to Ingestion Layer");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function copyText(txt: string, id: string) {
+    navigator.clipboard?.writeText(txt);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
+
+  return (
+    <div className="card mb-6" style={{ border: "1px solid var(--border)", background: "var(--bg-surface)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 18 }}>{"\uD83D\uDCE5"}</span>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>
+              Universal Log Ingestion (CSV / Raw Logs)
+            </div>
+            <span className="pill pill-blue" style={{ fontSize: 10 }}>C1 Ingestion Layer</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+            Submit universal CSV security logs to the C1 ingestion batcher, compute authentic SHA-256 cryptographic hashes, write compressed chunks to raw store, and route through the pipeline.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(SAMPLE_DATASETS).map(([key, item]) => (
+            <button
+              key={key}
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => loadPreset(key)}
+              title={item.desc}
+              style={{ fontSize: 11, padding: "4px 8px" }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Drag & Drop Upload Zone */}
+      {!result && (
+        <div
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          style={{
+            border: `2px dashed ${dragOver ? "var(--primary)" : "var(--border)"}`,
+            borderRadius: "var(--radius-md)",
+            padding: "20px 24px",
+            textAlign: "center",
+            cursor: "pointer",
+            background: dragOver ? "var(--bg-elevated)" : "var(--bg-base)",
+            transition: "all 0.2s",
+            marginBottom: 16,
+          }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.txt,.log"
+            style={{ display: "none" }}
+            onChange={handleFileSelect}
+          />
+          <div style={{ fontSize: 24, marginBottom: 6 }}>{"\uD83D\uDCC4"}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+            {filename && csvText ? `Selected: ${filename}` : "Drag and drop your CSV file here, or click to browse"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            Supports standard CSV, headerless syslog lines, firewall events, and web server logs.
+          </div>
+        </div>
+      )}
+
+      {/* Optional raw text toggle / editor */}
+      {!result && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => setShowRawPaste(!showRawPaste)}
+              style={{ fontSize: 11, padding: "2px 8px" }}
+            >
+              {showRawPaste ? "▲ Hide CSV Editor" : "▼ Paste or Edit CSV Raw Text"}
+            </button>
+            {csvText && (
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {rawLines.length} lines detected
+              </span>
+            )}
+          </div>
+
+          {showRawPaste && (
+            <textarea
+              value={csvText}
+              onChange={e => { setCsvText(e.target.value); setError(null); setResult(null); }}
+              placeholder="Paste comma-separated logs or syslog lines here..."
+              rows={6}
+              style={{
+                width: "100%",
+                background: "var(--bg-base)",
+                color: "var(--text-primary)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                padding: "8px 12px",
+                fontSize: 12,
+                fontFamily: "monospace",
+                resize: "vertical",
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Pre-ingest preview */}
+      {!result && csvText.trim() && (
+        <div style={{ marginBottom: 16, background: "var(--bg-base)", padding: "12px 16px", borderRadius: "var(--radius-md)", border: "1px solid var(--border-subtle)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
+              {"\uD83D\uDD0D"} CSV Preview ({rawLines.length} records ready)
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => { setCsvText(""); setResult(null); }}
+              style={{ fontSize: 10, padding: "2px 6px" }}
+            >
+              Clear
+            </button>
+          </div>
+          <div style={{ maxHeight: 110, overflow: "auto", fontSize: 11, fontFamily: "monospace", color: "var(--text-muted)" }}>
+            {previewRows.map((line, idx) => (
+              <div key={idx} style={{ padding: "2px 0", borderBottom: "1px solid var(--border-subtle)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ color: "var(--text-accent)", marginRight: 8 }}>#{idx + 1}</span>
+                {line}
+              </div>
+            ))}
+            {rawLines.length > 4 && (
+              <div style={{ fontStyle: "italic", marginTop: 4, color: "var(--text-muted)" }}>
+                ... and {rawLines.length - 4} more rows
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Action button */}
+      {!result && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={uploading || !csvText.trim()}
+            onClick={handleIngest}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 18px" }}
+          >
+            {uploading ? (
+              <>
+                <span className="spinner" style={{ width: 14, height: 14 }} />
+                <span>Submitting to Ingestion Layer (:5142)...</span>
+              </>
+            ) : (
+              <>
+                <span>{"\uD83D\uDE80"} Submit to Ingestion Layer</span>
+              </>
+            )}
+          </button>
+          {csvText && !uploading && (
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Will write to compressed raw chunks & execute pipeline routing
+            </span>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="banner banner-danger" style={{ marginTop: 12, fontSize: 12 }}>
+          {"\u26A0"} {error}
+        </div>
+      )}
+
+      {/* Output Display on Dashboard */}
+      {result && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{
+            background: "var(--success-dim)",
+            border: "1px solid rgba(16,185,129,0.3)",
+            borderRadius: "var(--radius-md)",
+            padding: "12px 16px",
+            marginBottom: 16,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+          }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: "var(--success)", fontWeight: 700, fontSize: 13 }}>
+                  {"\u2705"} Ingestion & Ledger Recording Complete
+                </span>
+                <span className="pill pill-green">{result.ingested_count} logs ingested</span>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                Stored in raw chunks: <span className="text-mono">{result.chunks.join(", ") || "chunk_active"}</span> {"\u00B7"} All authentic cryptographic SHA-256 hashes verified
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className="pill pill-green">HOT Path: {result.summary.hot_path_count}</span>
+              <span className="pill pill-yellow">COLD Review Queue: {result.summary.cold_path_count}</span>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => { setResult(null); setCsvText(""); }}
+                style={{ fontSize: 11 }}
+              >
+                + Ingest Another CSV
+              </button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Ingested Records & Verification Audit
+          </div>
+
+          <div className="table-wrap" style={{ maxHeight: 320, overflow: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Lineage ID</th>
+                  <th>SHA-256 Hash</th>
+                  <th>Source / Path</th>
+                  <th>Storage Pointer</th>
+                  <th>Raw Preview</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.records.map((r, i) => (
+                  <tr key={r.lineage_id || i}>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span className="text-mono" style={{ color: "var(--text-accent)", fontSize: 11 }}>
+                          {r.lineage_id ? `${r.lineage_id.slice(0, 8)}...${r.lineage_id.slice(-4)}` : "\u2014"}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => copyText(r.lineage_id, `lid-${i}`)}
+                          title="Copy full Lineage ID"
+                          style={{ padding: "1px 5px", fontSize: 10 }}
+                        >
+                          {copiedId === `lid-${i}` ? "\u2713" : "\uD83D\uDCCB"}
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span className="text-mono" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                          {r.sha256_hash ? `${r.sha256_hash.slice(0, 10)}...` : "\u2014"}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => copyText(r.sha256_hash, `sha-${i}`)}
+                          title="Copy SHA-256 Hash"
+                          style={{ padding: "1px 5px", fontSize: 10 }}
+                        >
+                          {copiedId === `sha-${i}` ? "\u2713" : "\uD83D\uDCCB"}
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      {r.path_taken === "HOT" ? (
+                        <span className="pill pill-green">HOT: {r.source_type || "matched"}</span>
+                      ) : r.path_taken === "COLD" ? (
+                        <span className="pill pill-yellow">COLD: {r.cluster_id || "Review Queue"}</span>
+                      ) : (
+                        <span className="pill pill-blue">RAW STORE</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className="text-mono" style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {r.storage_pointer || (r.chunk_id ? `raw_store://${r.chunk_id}` : "\u2014")}
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontFamily: "monospace", color: "var(--text-muted)" }}>
+                        {r.sample_preview || "\u2014"}
+                      </div>
+                    </td>
+                    <td>
+                      {onTrace && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={() => onTrace(r.lineage_id)}
+                          style={{ fontSize: 11, padding: "2px 8px" }}
+                        >
+                          {"\uD83D\uDD0D"} Trace
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- DashboardView -----------------------------------------------------------
 
-function DashboardView() {
-  const { data: stats, loading, error, stale } = useFetch<Stats>(`${API}/stats`);
-  const { data: clustersPage } = useFetch<ClustersPage>(`${API}/queue/clusters?limit=5`);
+function DashboardView({ onTrace }: { onTrace?: (id: string) => void }) {
+  const { data: stats, loading, error, stale, reload: reloadStats } = useFetch<Stats>(`${API}/stats`);
+  const { data: clustersPage, reload: reloadClusters } = useFetch<ClustersPage>(`${API}/queue/clusters?limit=5`);
   const { data: packs } = useFetch<{ packs: Pack[] }>(`${API}/packs`);
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><span className="spinner" /></div>;
@@ -428,6 +903,9 @@ function DashboardView() {
           <div className="stat-sub">of {packs?.packs.length ?? 0} total</div>
         </div>
       </div>
+
+      {/* Universal Log CSV Ingestion Layer Studio */}
+      <LogCsvUploader onTrace={onTrace} onIngested={() => { reloadStats(); reloadClusters(); }} />
 
       <div className="grid-2">
         <div className="card">
@@ -1100,7 +1578,7 @@ export default function Home() {
         </div>
 
         <div className="page-content">
-          {view === "dashboard" && <DashboardView />}
+          {view === "dashboard" && <DashboardView onTrace={handleTrace} />}
           {view === "queue" && (
             <QueueView onClusterSelect={id => { setSelectedCluster(id); setView("cluster"); }} />
           )}

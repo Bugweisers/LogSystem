@@ -110,12 +110,53 @@ export class IngestionService {
       const httpListener = createHttpListener({
         port: ports.http,
         onMessage: async (msg, rinfo) => {
-          const env = await this.ingest(msg, {
-            source_ip: rinfo.address,
-            source_port: rinfo.port,
+          let payloadBytes = msg;
+          let sourceIp = rinfo.address;
+          let sourcePort = rinfo.port;
+          try {
+            const parsed = JSON.parse(msg.toString("utf-8"));
+            if (parsed && typeof parsed === "object" && typeof parsed.payload === "string") {
+              payloadBytes = Buffer.from(parsed.payload, "utf-8");
+              if (parsed.source_ip) sourceIp = parsed.source_ip;
+              if (parsed.source_port) sourcePort = parsed.source_port;
+            }
+          } catch {
+            // raw buffer
+          }
+          const env = await this.ingest(payloadBytes, {
+            source_ip: sourceIp,
+            source_port: sourcePort,
             transport_protocol: "HTTP",
           });
-          return { lineage_id: env.lineage_id };
+          return { lineage_id: env.lineage_id, sha256_hash: env.sha256_hash };
+        },
+        onBatch: async (events, rinfo) => {
+          const results: Array<{ lineage_id: string; sha256_hash: string }> = [];
+          for (const ev of events) {
+            let bytes: Buffer;
+            let ip = rinfo.address;
+            let port = rinfo.port;
+            if (typeof ev === "string") {
+              bytes = Buffer.from(ev, "utf-8");
+            } else if (ev && typeof ev === "object") {
+              bytes = Buffer.from(ev.payload || ev.raw_log || ev.message || JSON.stringify(ev), "utf-8");
+              if (ev.source_ip) ip = ev.source_ip;
+              if (ev.source_port) port = ev.source_port;
+            } else {
+              bytes = Buffer.from(String(ev), "utf-8");
+            }
+            const env = await this.ingest(bytes, {
+              source_ip: ip,
+              source_port: port,
+              transport_protocol: "HTTP",
+            });
+            results.push({ lineage_id: env.lineage_id, sha256_hash: env.sha256_hash });
+          }
+          await this.flush();
+          return results;
+        },
+        onFlush: async () => {
+          await this.flush();
         },
       });
       this.listeners.push(httpListener);

@@ -4,11 +4,20 @@
  */
 import express, { type Express } from "express";
 import cors from "cors";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getDb } from "./db.js";
+
+const execFileAsync = promisify(execFile);
+const __dir = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dir, "..", "..", "..");
 
 export const app: Express = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.text({ type: ["text/csv", "text/plain"], limit: "50mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -428,6 +437,255 @@ app.get("/packs", (_req, res) => {
   const db = getDb();
   const packs = db.prepare("SELECT * FROM mapping_packs ORDER BY created_at DESC").all();
   res.json({ packs });
+});
+
+// ── /ingest/csv — Universal CSV Log Ingestion & Pipeline Orchestration ─────
+
+export function parseCsvToLogs(content: string): Array<{
+  raw_log: string;
+  source_ip?: string;
+  source_port?: number;
+}> {
+  if (!content || !content.trim()) return [];
+
+  // Parse lines respecting quotes
+  const lines: string[] = [];
+  let cur = "";
+  let insideQuote = false;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === '"') {
+      insideQuote = !insideQuote;
+      cur += ch;
+    } else if ((ch === "\n" || ch === "\r") && !insideQuote) {
+      if (ch === "\r" && content[i + 1] === "\n") i++;
+      if (cur.trim().length > 0) lines.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim().length > 0) lines.push(cur.trim());
+  if (lines.length === 0) return [];
+
+  function parseRow(line: string, delim = ","): string[] {
+    const fields: string[] = [];
+    let field = "";
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        if (inQ && line[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQ = !inQ;
+        }
+      } else if (c === delim && !inQ) {
+        fields.push(field.trim());
+        field = "";
+      } else {
+        field += c;
+      }
+    }
+    fields.push(field.trim());
+    return fields;
+  }
+
+  // Detect delimiter
+  const firstLine = lines[0]!;
+  let delim = ",";
+  const commas = (firstLine.match(/,/g) || []).length;
+  const semis = (firstLine.match(/;/g) || []).length;
+  const tabs = (firstLine.match(/\t/g) || []).length;
+  if (semis > commas && semis > tabs) delim = ";";
+  else if (tabs > commas && tabs > semis) delim = "\t";
+
+  const firstRow = parseRow(firstLine, delim);
+
+  const knownLogCols = ["raw_log", "raw_message", "message", "log", "event", "syslog", "payload", "raw", "data", "log_message", "log_text"];
+  const headerIndices: Record<string, number> = {};
+  firstRow.forEach((col, idx) => {
+    headerIndices[col.toLowerCase().replace(/[\s\-_]+/g, "_")] = idx;
+  });
+
+  let logColIdx = -1;
+  for (const k of knownLogCols) {
+    if (k in headerIndices) {
+      logColIdx = headerIndices[k]!;
+      break;
+    }
+  }
+
+  const ipColIdx = headerIndices["source_ip"] ?? headerIndices["src_ip"] ?? headerIndices["ip"] ?? headerIndices["host"] ?? -1;
+  const portColIdx = headerIndices["source_port"] ?? headerIndices["src_port"] ?? headerIndices["port"] ?? -1;
+  const hasHeader = logColIdx !== -1 || ipColIdx !== -1 || Object.keys(headerIndices).some(k => ["timestamp", "action", "protocol", "dst_ip", "dest_ip"].includes(k));
+
+  const startIdx = hasHeader ? 1 : 0;
+  const results: Array<{ raw_log: string; source_ip?: string; source_port?: number }> = [];
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const row = parseRow(lines[i]!, delim);
+    if (!row || row.length === 0 || (row.length === 1 && !row[0])) continue;
+
+    let rawLog = "";
+    let srcIp: string | undefined = undefined;
+    let srcPort: number | undefined = undefined;
+
+    if (logColIdx !== -1 && row[logColIdx]) {
+      rawLog = row[logColIdx]!;
+    } else if (hasHeader) {
+      const parts: string[] = [];
+      firstRow.forEach((colName, idx) => {
+        const val = row[idx];
+        if (val !== undefined && val !== "") {
+          parts.push(`${colName}="${val.replace(/"/g, '\\"')}"`);
+        }
+      });
+      rawLog = parts.join(" ");
+    } else {
+      rawLog = row.join(" ");
+    }
+
+    if (ipColIdx !== -1 && row[ipColIdx]) srcIp = row[ipColIdx];
+    if (portColIdx !== -1 && row[portColIdx]) {
+      const p = parseInt(row[portColIdx]!, 10);
+      if (!isNaN(p)) srcPort = p;
+    }
+
+    if (rawLog.trim()) {
+      results.push({
+        raw_log: rawLog.trim(),
+        source_ip: srcIp,
+        source_port: srcPort,
+      });
+    }
+  }
+
+  return results;
+}
+
+app.post(["/ingest/csv", "/api/upload-csv"], async (req, res) => {
+  let csvText = "";
+  let filename = "universal_logs.csv";
+  let defaultSourceIp = "127.0.0.1";
+
+  if (typeof req.body === "string") {
+    csvText = req.body;
+  } else if (req.body && typeof req.body === "object") {
+    csvText = req.body.csv_content || req.body.csv || req.body.content || "";
+    if (req.body.filename) filename = String(req.body.filename);
+    if (req.body.source_ip) defaultSourceIp = String(req.body.source_ip);
+  }
+
+  if (!csvText || !csvText.trim()) {
+    return errorResponse(res, "EMPTY_CSV", "CSV content is empty or not provided", 400);
+  }
+
+  const logs = parseCsvToLogs(csvText);
+  if (logs.length === 0) {
+    return errorResponse(res, "NO_LOGS_PARSED", "No valid log records found in CSV", 400);
+  }
+
+  const ingestionUrl = process.env.INGESTION_HTTP_URL || "http://localhost:5142";
+  let ingestedEvents: Array<{ lineage_id: string; sha256_hash?: string }> = [];
+
+  try {
+    const ingestRes = await fetch(`${ingestionUrl}/ingest/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(logs.map(l => ({
+        payload: l.raw_log,
+        source_ip: l.source_ip || defaultSourceIp,
+        source_port: l.source_port || 514,
+      }))),
+    });
+
+    if (!ingestRes.ok) {
+      throw new Error(`Ingestion service returned HTTP ${ingestRes.status}`);
+    }
+
+    const json = (await ingestRes.json()) as { events: Array<{ lineage_id: string; sha256_hash?: string }> };
+    ingestedEvents = json.events || [];
+  } catch (err: any) {
+    console.error("Ingestion listener error:", err.message);
+    return errorResponse(res, "INGESTION_FAILED", `Failed to send to Ingestion Layer: ${err.message}`, 502);
+  }
+
+  // Ensure flushed
+  try {
+    await fetch(`${ingestionUrl}/flush`, { method: "POST" });
+  } catch {
+    // ignore
+  }
+
+  // Trigger pipeline extraction and coldpath Drain
+  const lineageIds = ingestedEvents.map(e => e.lineage_id);
+  if (lineageIds.length > 0) {
+    try {
+      const workerScript = join(REPO_ROOT, "tools", "pipeline_worker.py");
+      await execFileAsync("python", [workerScript, "--lineage-ids", ...lineageIds]);
+    } catch (err: any) {
+      console.warn("Pipeline worker execution note:", err.message);
+    }
+  }
+
+  // Query DB for complete event trace
+  const db = getDb();
+  const placeholders = lineageIds.map(() => "?").join(",");
+  const records = db.prepare(`
+    SELECT
+      re.lineage_id,
+      re.sha256_hash,
+      re.source_ip,
+      re.source_port,
+      re.transport_protocol,
+      re.raw_size_bytes,
+      re.storage_pointer,
+      re.chunk_id,
+      re.ingestion_timestamp,
+      eh.path_taken,
+      eh.source_type,
+      eh.extracted_fields,
+      eh.confidence_scores,
+      rq.cluster_id,
+      rq.status as review_status,
+      nh.ocsf_class_uid,
+      nh.schema_valid
+    FROM raw_events re
+    LEFT JOIN extraction_history eh ON eh.lineage_id = re.lineage_id
+    LEFT JOIN review_queue rq ON rq.lineage_id = re.lineage_id
+    LEFT JOIN normalization_history nh ON nh.lineage_id = re.lineage_id
+    WHERE re.lineage_id IN (${placeholders})
+    ORDER BY re.created_at ASC
+  `).all(...lineageIds) as Record<string, unknown>[];
+
+  const parsedRecords: Array<Record<string, any>> = records.map((r, idx) => ({
+    ...r,
+    extracted_fields: parseJson(r["extracted_fields"]),
+    confidence_scores: parseJson(r["confidence_scores"]),
+    sample_preview: logs[idx]?.raw_log?.slice(0, 160) || "",
+  }));
+
+  const chunks = Array.from(new Set(parsedRecords.map(r => r["chunk_id"] as string).filter(Boolean)));
+  const hotCount = parsedRecords.filter(r => r["path_taken"] === "HOT").length;
+  const coldCount = parsedRecords.filter(r => r["path_taken"] === "COLD").length;
+  const rawCount = parsedRecords.length - hotCount - coldCount;
+
+  return res.json({
+    ok: true,
+    filename,
+    total_rows: logs.length,
+    ingested_count: ingestedEvents.length,
+    chunks,
+    summary: {
+      total: parsedRecords.length,
+      hot_path_count: hotCount,
+      cold_path_count: coldCount,
+      raw_stored_count: rawCount,
+    },
+    records: parsedRecords,
+  });
 });
 
 // ── start ────────────────────────────────────────────────────────────────────

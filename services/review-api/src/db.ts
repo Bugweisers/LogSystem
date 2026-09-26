@@ -92,12 +92,12 @@ function seedIfEmpty(db: Database.Database): void {
     "INSERT OR IGNORE INTO raw_events (lineage_id,sha256_hash,ingestion_timestamp,source_ip,source_port,transport_protocol,char_encoding,raw_size_bytes,storage_pointer,chunk_id,merkle_leaf_index,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
   );
   const raw: Array<[string,string,string,number,string,number,string,number]> = [
-    ["11111111-0000-4000-a000-000000000001","a".repeat(64),"192.168.1.100",51001,"UDP",412,"chunk_20260926_01",0],
-    ["11111111-0000-4000-a000-000000000002","b".repeat(64),"192.168.1.101",51002,"UDP",398,"chunk_20260926_01",1],
-    ["22222222-0000-4000-a000-000000000001","c".repeat(64),"10.0.0.55",514,"TCP",287,"chunk_20260926_01",2],
-    ["22222222-0000-4000-a000-000000000002","d".repeat(64),"10.0.0.55",514,"TCP",312,"chunk_20260926_01",3],
-    ["33333333-0000-4000-a000-000000000001","e".repeat(64),"172.16.0.10",8080,"HTTP",956,"chunk_20260926_02",0],
-    ["44444444-0000-4000-a000-000000000001","f".repeat(64),"10.10.1.200",443,"TLS",1204,"chunk_20260926_02",1],
+    ["11111111-0000-4000-a000-000000000001","c959385bbbe6a9f5becc5ad8434ab7c149e3610c9c7cf5e1741d4a2be8135826","192.168.1.100",51001,"UDP",412,"chunk_20260926_01",0],
+    ["11111111-0000-4000-a000-000000000002","dc7ffd3fe0098832da9cfa609d0d6e25b8bced53c413f295b6ce929d5fe9f43f","192.168.1.101",51002,"UDP",398,"chunk_20260926_01",1],
+    ["22222222-0000-4000-a000-000000000001","10a5e146d427cf514e431a3044ae32a07caa679ef10dce7d828d749550313727","10.0.0.55",514,"TCP",287,"chunk_20260926_01",2],
+    ["22222222-0000-4000-a000-000000000002","d9ee46deb091227c69b3e0da8dbd7a427330c68ceda447193e3a2cb7056d19ca","10.0.0.55",514,"TCP",312,"chunk_20260926_01",3],
+    ["33333333-0000-4000-a000-000000000001","c04c17110a0b22584ce622217c68be4c31c1efed253d2a6683dbc60edfdaddf8","172.16.0.10",8080,"HTTP",956,"chunk_20260926_02",0],
+    ["44444444-0000-4000-a000-000000000001","8ef9b62649037825570bc32ab95e96bd516da68df4774a01c773ace5bfd6a620","10.10.1.200",443,"TLS",1204,"chunk_20260926_02",1],
   ];
   for (const [lid,sha,sip,sport,tp,sz,cid,off] of raw)
     insRaw.run(lid,sha,ago(120),sip,sport,tp,"UTF-8",sz,`raw_store://${cid}/offset_${off}`,cid,off,ago(120));
@@ -137,11 +137,11 @@ function seedIfEmpty(db: Database.Database): void {
   const insPack = db.prepare(
     "INSERT OR IGNORE INTO mapping_packs (pack_id,source_type,version,pack_yaml_hash,signature,signer_key_id,status,created_at,promoted_at) VALUES (?,?,?,?,?,?,?,?,?)"
   );
-  insPack.run("cisco_asa_v1.3.0","cisco_asa","1.3.0","a".repeat(64),"sig-asa-130","dev-key-001","active",ago(500),ago(480));
-  insPack.run("palo_alto_fw_v0.1.0","palo_alto_fw","0.1.0","b".repeat(64),"sig-pa-010","dev-key-001","draft",ago(120),null);
-  insPack.run("fortinet_fortigate_v0.1.0","fortinet_fortigate","0.1.0","c".repeat(64),"sig-fg-010","dev-key-001","staged",ago(90),null);
-  insPack.run("nginx_access_v0.1.0","nginx_access","0.1.0","d".repeat(64),"sig-ng-010","dev-key-001","draft",ago(60),null);
-  insPack.run("windows_event_v1.0.0","windows_event","1.0.0","e".repeat(64),"sig-we-100","dev-key-001","active",ago(200),ago(190));
+  insPack.run("cisco_asa_v1.3.0","cisco_asa","1.3.0","f4bb3623e6b7bee536fa21648d290f56fee16e01e81819eb2123859133c424c3","dc4604eef84220798f47044605719a3c9b88e14620f340809b0b4bce36cba4b54e386928e4697ff92095fefb3d4f4007a39d48692f03f757f49f493774614e04","dev-key-001","active",ago(500),ago(480));
+  insPack.run("palo_alto_fw_v0.1.0","palo_alto_fw","0.1.0","31ea469be4e34629012a48f650d88acb088f1cd4f083016d4b2cc9efb6afa0c9","a9b25c6af00f3c1fb7b41d92a0363f443306db7ecdbfc6ad650059d3a01ba26654be0027f673081e7d01306e1217e9feaa5f48ce833cf51639c0d7507300f90c","dev-key-001","draft",ago(120),null);
+  insPack.run("fortinet_fortigate_v0.1.0","fortinet_fortigate","0.1.0","7a91d225d9f020a37ca0582dbd29bc5607a1145699b46a6ccc744d49a3a60fd1","7211756cb1af960527084beb9ee1029cb32efc084f09d29ef1b3d0cf3bba2cf4e1e8cf0bbd6006e87f8aa89c6295ec7fe8a32a68b598d1a12a52dfdb0dcf6f01","dev-key-001","staged",ago(90),null);
+  insPack.run("nginx_access_v0.1.0","nginx_access","0.1.0","3e3dcfe36749cea3bcfeebdeb02fbb99e97dad5fc0e577b076f60ed1c2bcd902","07891b40e6ff3b22c47f6a671a6ffeeae7f9999a0928236aafe7344795b5463f6ae8f921fa40df8276f57e53f191f4ae8b74659f81665a3b75a6c117b8ee830f","dev-key-001","draft",ago(60),null);
+  insPack.run("windows_event_v1.0.0","windows_event","1.0.0","8de9e01b10f47ecf295774cec992855d548831cea5f5a8be58e422ac5a91e656","25f5a24ba37c19375131e5bb44ec07da85b19e917d29ae6bb580665df063e5e495254199c9c43d2621743a41b212f3e820ef69a8449c25633842c8d234dc3801","dev-key-001","active",ago(200),ago(190));
 
   const insLc = db.prepare("INSERT INTO pack_lifecycle_events (pack_id,event_type,actor,event_hash,occurred_at) VALUES (?,?,?,?,?)");
   insLc.run("cisco_asa_v1.3.0","pack_created","system:auto-onboarding","hash-asa-1",ago(500));
@@ -154,7 +154,7 @@ function seedIfEmpty(db: Database.Database): void {
   const insChunk = db.prepare(
     "INSERT OR IGNORE INTO merkle_chunks (chunk_id,event_count,merkle_root_hash,batch_opened_at,batch_closed_at,anchor_status,anchored_at) VALUES (?,?,?,?,?,?,?)"
   );
-  insChunk.run("chunk_20260926_01",4,"root01".padEnd(64,"0"),ago(125),ago(120),"anchored",ago(115));
-  insChunk.run("chunk_20260926_02",2,"root02".padEnd(64,"0"),ago(65),ago(60),"pending",null);
+  insChunk.run("chunk_20260926_01",4,"4a8b792193b2a597a8d0554db221bc391f6920f0e21a221f57e62a1dc32f8901",ago(125),ago(120),"anchored",ago(115));
+  insChunk.run("chunk_20260926_02",2,"9c21b369e802a4bf473d09a74421b8c1f09230a1e45b128f73e51a2dc84f9102",ago(65),ago(60),"pending",null);
   console.log("✓ Seed data inserted");
 }
