@@ -7,7 +7,7 @@ import cors from "cors";
 import { getDb } from "./db.js";
 
 export const app: Express = express();
-app.use(cors({ origin: "http://localhost:3000" }));
+app.use(cors());
 app.use(express.json());
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -165,8 +165,13 @@ app.get("/queue", (req, res) => {
   res.json({ items: parsed, total, page: pageN, limit: limitN });
 });
 
-app.get("/queue/clusters", (_req, res) => {
+app.get("/queue/clusters", (req, res) => {
   const db = getDb();
+  const { page = "1", limit = "20" } = req.query as Record<string, string>;
+  const pageN = Math.max(1, parseInt(page));
+  const limitN = Math.min(100, Math.max(1, parseInt(limit)));
+  const offset = (pageN - 1) * limitN;
+
   const rows = db.prepare(`
     SELECT
       rq.cluster_id,
@@ -181,8 +186,11 @@ app.get("/queue/clusters", (_req, res) => {
     LEFT JOIN extraction_history eh ON eh.extraction_id = rq.extraction_id
     GROUP BY rq.cluster_id
     ORDER BY sample_count DESC, oldest_at ASC
-  `).all();
-  res.json({ clusters: rows });
+    LIMIT ? OFFSET ?
+  `).all(limitN, offset);
+
+  const total = (db.prepare(`SELECT COUNT(DISTINCT cluster_id) as c FROM review_queue`).get() as { c: number }).c;
+  res.json({ clusters: rows, total, page: pageN, limit: limitN });
 });
 
 app.get("/queue/clusters/:cluster_id", (req, res) => {
@@ -198,13 +206,42 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
 
   if (!items.length) return errorResponse(res, "NOT_FOUND", "Cluster not found", 404);
 
-  const parsed: Record<string, any>[] = items.map(r => ({
-    ...r,
-    candidate_mapping: parseJson(r["candidate_mapping"]),
-    confirmed_mapping: parseJson(r["confirmed_mapping"]),
-    extracted_fields: parseJson(r["extracted_fields"]),
-    confidence_scores: parseJson(r["confidence_scores"]),
-  }));
+  const parsed: Record<string, any>[] = items.map(r => {
+    let candidate = (parseJson(r["candidate_mapping"]) || {}) as Record<string, any>;
+    const confirmed = parseJson(r["confirmed_mapping"]) as Record<string, any> | null;
+    let extracted = parseJson(r["extracted_fields"]) as Record<string, any> | null;
+    let confidence = parseJson(r["confidence_scores"]) as Record<string, any> | null;
+
+    if (Object.keys(candidate).length === 0 && confirmed && typeof confirmed === "object") {
+      candidate = Object.fromEntries(
+        Object.entries(confirmed).map(([k, v]) => [
+          k,
+          typeof v === "object" && v !== null && "candidate_ocsf_attribute" in v
+            ? v
+            : { candidate_ocsf_attribute: String(v).replace(/^\$/, ""), similarity_score: 0.95, alternate_candidates: [] }
+        ])
+      );
+    }
+
+    if ((!confidence || Object.keys(confidence).length === 0) && Object.keys(candidate).length > 0) {
+      confidence = Object.fromEntries(
+        Object.entries(candidate).map(([k, v]: [string, any]) => [
+          k,
+          typeof v?.similarity_score === "number" ? v.similarity_score : 0.90
+        ])
+      );
+    }
+
+    return {
+      ...r,
+      candidate_mapping: candidate,
+      confirmed_mapping: confirmed,
+      extracted_fields: extracted,
+      confidence_scores: confidence,
+    };
+  });
+
+  const primaryCandidate = parsed.find(p => Object.keys(p.candidate_mapping || {}).length > 0)?.candidate_mapping || parsed[0]!["candidate_mapping"];
 
   return res.json({
     cluster_id,
@@ -214,7 +251,7 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
     oldest_at: parsed[0]!["created_at"],
     assigned_analyst: parsed[0]!["assigned_analyst"],
     items: parsed,
-    candidate_mapping: parsed[0]!["candidate_mapping"],
+    candidate_mapping: primaryCandidate,
     sample_raw_pointer: parsed[0]!["sample_raw_pointer"],
   });
 });
@@ -266,6 +303,39 @@ app.post("/queue/clusters/:cluster_id/reject", (req, res) => {
   ).run(actor, new Date().toISOString(), cluster_id);
 
   return res.json({ ok: true, cluster_id, status: "rejected" });
+});
+
+app.post("/queue/clusters/:cluster_id/rollback", (req, res) => {
+  const db = getDb();
+  const { cluster_id } = req.params;
+  const { actor } = req.body as { actor?: string };
+  if (!actor) return errorResponse(res, "MISSING_ACTOR", "actor is required");
+
+  const existing = db.prepare(
+    "SELECT status FROM review_queue WHERE cluster_id = ? LIMIT 1"
+  ).get(cluster_id) as { status: string } | undefined;
+  if (!existing) return errorResponse(res, "NOT_FOUND", "Cluster not found", 404);
+  if (!["confirmed", "rejected"].includes(existing.status)) {
+    return errorResponse(res, "INVALID_STATE", `Cannot rollback cluster in status '${existing.status}'`, 409);
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE review_queue SET status='pending', assigned_analyst=NULL, confirmed_mapping=NULL, resolved_at=NULL WHERE cluster_id=?"
+  ).run(cluster_id);
+
+  // Roll back the associated pack if it exists
+  const packId = `pack_${cluster_id.replace(/[^a-zA-Z0-9_]/g, "_")}_v1.0.0`;
+  const pack = db.prepare("SELECT pack_id FROM mapping_packs WHERE pack_id = ?").get(packId);
+  if (pack) {
+    db.prepare("UPDATE mapping_packs SET status = 'draft' WHERE pack_id = ?").run(packId);
+    const hash = `hash-rollback-${Date.now()}`;
+    db.prepare(
+      "INSERT INTO pack_lifecycle_events (pack_id, event_type, actor, event_hash, occurred_at) VALUES (?, 'pack_rolled_back', ?, ?, ?)"
+    ).run(packId, actor, hash, now);
+  }
+
+  return res.json({ ok: true, cluster_id, status: "pending" });
 });
 
 app.post("/queue/clusters/:cluster_id/assign", (req, res) => {

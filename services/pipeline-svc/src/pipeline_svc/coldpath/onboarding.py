@@ -111,23 +111,30 @@ class AutoOnboarder:
                     """,
                     (pack_id, actor, event_hash, now),
                 )
+                import json
+                conf_map_json = json.dumps(pack_dict.get("confirmed_mapping") or {})
+                cand_map_json = json.dumps({
+                    k: {"candidate_ocsf_attribute": str(v).replace("$", ""), "similarity_score": 0.95}
+                    for k, v in (pack_dict.get("confirmed_mapping") or {}).items()
+                })
                 updated = conn.execute(
                     """
                     UPDATE review_queue
-                    SET status = 'confirmed', assigned_analyst = ?, resolved_at = ?
+                    SET status = 'confirmed', assigned_analyst = ?, resolved_at = ?, confirmed_mapping = ?,
+                        candidate_mapping = CASE WHEN candidate_mapping = '{}' OR candidate_mapping IS NULL THEN ? ELSE candidate_mapping END
                     WHERE cluster_id = ?
                     """,
-                    (actor, now, cluster_id),
+                    (actor, now, conf_map_json, cand_map_json, cluster_id),
                 ).rowcount
                 if updated == 0:
                     conn.execute(
                         """
                         INSERT INTO review_queue (
                             lineage_id, extraction_id, candidate_mapping, cluster_id,
-                            status, assigned_analyst, created_at, resolved_at
-                        ) VALUES (?, 0, '{}', ?, 'confirmed', ?, ?, ?)
+                            status, assigned_analyst, created_at, resolved_at, confirmed_mapping
+                        ) VALUES (?, 0, ?, ?, 'confirmed', ?, ?, ?, ?)
                         """,
-                        (str(uuid.uuid4()), cluster_id, actor, now, now),
+                        (str(uuid.uuid4()), cand_map_json, cluster_id, actor, now, now, conf_map_json),
                     )
                 conn.commit()
         except sqlite3.OperationalError:

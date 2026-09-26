@@ -4,10 +4,10 @@
 
 > **Rule: nothing goes in this file unless it has been actually built and its acceptance criteria (from `phases.md`) have actually passed.** A planned feature, an in-progress feature, or an assumption is NOT a status update — see `agent.md` Section "Anti-Hallucination Rules" for the exact discipline.
 
-## Current Phase: **M7 — Hardening, Docker, Air-Gap, & End-to-End**
+## Current Phase: **M8 — Review Web UI / Full Analyst UX**
 
 **Phase start date:** 2026-09-26
-**Phase status:** Complete (Advancing to M8 — Review Web UI / Full Analyst UX)
+**Phase status:** Complete (All Milestones M0 through M8 Completed & Verified)
 
 ## What Exists Right Now
 
@@ -85,9 +85,9 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
   - Merkle tree builder: **1,126,060 leaves/sec** (p50: 89.9µs, p99: 130.1µs)
 - **End-to-End Integration Drill (`tests/e2e/test_end_to_end_m7.py`):** Multi-event ingestion, zstd compression, Merkle anchor, tamper drill (altering 1 byte isolates corrupted leaf, verifies negative control), OCSF assembly, SIEM JSONL/CEF sinks, Parquet data lake, and cold-path auto-onboarding hot-reload.
 
-### Review UI & Review API (M8 partial / developer preview)
-- `review-api` (Port 4000): 16 REST endpoints with SQLite seed data and forward trace/verify stubs.
-- `review-ui` (Port 3000): Dark-mode dashboard SPA with 5 views (Dashboard, Queue, Detail, Packs, Trace), 100% air-gap compliant (system fonts).
+### Review UI & Review API (M8 Complete)
+- `review-api` (Port 4000): 16 REST endpoints with SQLite database integration, forward trace `/trace/:id`, Merkle deep verification `/verify/:id`, queue triage, and `/queue/clusters/:id/confirm` lifecycle promotion with 409 conflict handling (6/6 tests pass).
+- `review-ui` (Port 3000): Dark-mode analyst dashboard SPA built with Next.js 15 standalone mode. Implements full component inventory per `design.md` (`ClusterCard`, `RawSampleViewer` with line numbers, `FieldMappingRow` with candidate dropdown + free-text override, `StatusChip`, `TriageDashboard` widgets, `ConflictBanner`, `StalenessBanner`). 100% air-gap compliant (system fonts, zero external CDNs). Next.js production build verified clean (5.14 kB route, 108 kB First Load JS).
 
 ### Services Status
 | Service | Language | Status |
@@ -96,14 +96,14 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 | `integrity-svc` | Node/TS | M2 complete: Merkle builder, signed ledger, anchor service, deep verify, tamper drill, 7/7 tests pass |
 | `pipeline-svc` | Python | M3, M4, M6 complete: pack compiler, RCU registry, hot-path router, OCSF 4001 normalizer, cold-path Drain miner, semantic mapper, confidence gate, draft generator, auto-onboarding loop, 22/22 tests pass |
 | `sinks-svc` | Python | M5 complete: LocalMessageBus, SIEM JSONL/CEF sink, Parquet data lake writer, 7/7 tests pass |
-| `review-api` | Node/TS | 16 REST endpoints live on port 4000, 1/1 tests pass |
-| `review-ui` | Next.js | SPA running on port 3000 (air-gap safe) |
+| `review-api` | Node/TS | M8 complete: 16 REST endpoints, cluster confirmation lifecycle, 409 conflict detection, 6/6 tests pass |
+| `review-ui` | Next.js | M8 complete: Analyst review SPA on port 3000, 5 views, 100% air-gap compliant, production build verified |
 | `docker` & `e2e` | Multi | M7 complete: 6 multi-stage Dockerfiles, compose air-gap topology, benchmarks runner, E2E drill, 1/1 tests pass |
 
 ### CI / lint / test
 - **Python:** `pytest` runs 46 tests (16 contracts + 22 pipeline-svc + 7 sinks-svc + 1 e2e drill).
-- **TypeScript:** 38 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests + 1 review-api test).
-- **Total tests: 84/84 passing across repository.**
+- **TypeScript:** 43 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests + 6 review-api tests).
+- **Total tests: 89/89 passing across repository.**
 - **Lint & Types:** `ruff check` 0 errors, `mypy` 0 errors across all Python packages, `tsc --noEmit` clean 0 errors across all TS packages.
 - **Air-Gap Security:** `tools/check_airgap.py` passes 100% offline verification.
 - **Live Verification (`tools/verify_live.py`):** Stages M1-M6 verified against live daemons and filesystem.
@@ -114,6 +114,7 @@ _(Newest entry at the top.)_
 
 | Date | Phase | What shipped | Verified by | New deviations logged? |
 |---|---|---|---|---|
+| 2026-09-26 | M8 | Full M8 implementation: Analyst review SPA (`review-ui`, Next.js 15 standalone build), 5 views (Dashboard, Queue, Detail, Packs, Trace), two-pane cluster detail with line-numbered `RawSampleViewer` and `FieldMappingRow`, optimistic confirmation with HTTP 409 `ConflictBanner`, `review-api` pack lifecycle synchronization (`mapping_packs` + `pack_lifecycle_events`) | `next build` 0 errors (prerendered static), `vitest run` 6/6 review-api tests pass (43/43 TS suite, 89/89 full monorepo), `pnpm run ci` clean | No — adheres to design.md §2, architecture.md §6 |
 | 2026-09-26 | M7 | Full M7 implementation: 6 multi-stage hardened Dockerfiles (`docker/Dockerfile.*`), `docker-compose.yml` & `docker-compose.airgap.yml` (internal: true), air-gap compliance scanner (`tools/check_airgap.py`), throughput & latency benchmark runner (`tools/benchmark.py`), full end-to-end integration and tamper drill test (`tests/e2e/test_end_to_end_m7.py`) | `pytest` 46/46 tests pass (84/84 full monorepo), `check_airgap.py` pass, `benchmark.py` pass (ingest 447k eps, router 48k eps, norm 41k eps, Merkle 1.1M leaves/sec), `pnpm run ci` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M6 | Full `pipeline-svc/coldpath` M6 implementation: Drain log clustering, transfer-learning token seeding, TF-IDF lexical semantic mapper + type verification, confidence gate (0.85) + SQLite `review_queue` routing, draft pack generator, auto-onboarding loop (Ed25519 signing, lifecycle records, RCU hot-reload swap, subsequent HOT path routing @ 1.0 confidence), HTTP 409 concurrency conflict check, cluster capacity capping | `pytest` 6/6 coldpath tests pass (45/45 Python suite, 83/83 full monorepo), `tools/verify_live.py` M1-M6 live pass, `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M4 | Full `pipeline-svc` M4 implementation: Layer 1 crosswalk, Layer 2 canonicalizers (IPv4 zero-stripping, IPv6 dual-form equivalence, port bounds [0, 65535], timestamp formats to epoch ms, enum fallback to 99), Layer 3 OCSF 4001 assembly & validation, invariant `metadata.uid == _lineage_id`, invalid timestamp schema_valid=false isolation, SQLite `normalization_history` append-only repo, `ulpf.ocsf.events.v1` bus publisher | `pytest` 6/6 normalization tests pass (32/32 Python suite, 70/70 full monorepo), `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |

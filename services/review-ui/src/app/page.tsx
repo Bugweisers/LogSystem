@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 const API = "http://localhost:4000";
 
-// ─── types ───────────────────────────────────────────────────────────────────
+// --- types -------------------------------------------------------------------
+
 interface Stats {
   status_counts: Array<{ status: string; count: number }>;
   oldest_pending: { cluster_id: string; oldest_at: string } | null;
@@ -21,6 +22,13 @@ interface Cluster {
   assigned_analyst: string | null;
   source_type: string;
   sample_raw_pointer: string;
+}
+
+interface ClustersPage {
+  clusters: Cluster[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 interface QueueItem {
@@ -52,21 +60,98 @@ interface Pack {
   promoted_at: string | null;
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+interface ClusterDetailData {
+  cluster_id: string;
+  status: string;
+  source_type: string;
+  sample_count: number;
+  oldest_at: string;
+  assigned_analyst: string | null;
+  items: QueueItem[];
+  candidate_mapping: Record<string, CandidateField>;
+  sample_raw_pointer: string;
+}
+
+// --- hooks -------------------------------------------------------------------
+
+/** Calls callback on an interval while active=true. */
+function useAutoRefresh(callback: () => void, intervalMs: number, active: boolean) {
+  const savedCb = useRef(callback);
+  useEffect(() => { savedCb.current = callback; });
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => savedCb.current(), intervalMs);
+    return () => clearInterval(id);
+  }, [active, intervalMs]);
+}
+
+function useFetch<T>(url: string) {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const everLoaded = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6000);
+      const r = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const json = await r.json() as T;
+      everLoaded.current = true;
+      setData(json);
+      setError(null);
+      setStale(false);
+    } catch (e) {
+      setError(String(e));
+      if (everLoaded.current) setStale(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
+
+  useEffect(() => {
+    everLoaded.current = false;
+    setLoading(true);
+    setStale(false);
+    setError(null);
+    load();
+  }, [load]);
+
+  return { data, loading, error, stale, reload: load };
+}
+
+// --- StatusChip - all 9 states from design.md §2.2 ---------------------------
+
+const STATUS_META: Record<string, { icon: string; label: string }> = {
+  pending:     { icon: "\u23F3", label: "Pending" },
+  in_review:   { icon: "\uD83D\uDD0D", label: "In Review" },
+  confirmed:   { icon: "\u2713", label: "Confirmed" },
+  signed:      { icon: "\uD83D\uDD0F", label: "Signed" },
+  anchored:    { icon: "\u2693", label: "Anchored" },
+  promoted:    { icon: "\uD83D\uDE80", label: "Promoted" },
+  rejected:    { icon: "\u2715",  label: "Rejected" },
+  quarantined: { icon: "\uD83D\uDEAB", label: "Quarantined" },
+  rolled_back: { icon: "\u21A9",  label: "Rolled Back" },
+  active:      { icon: "\u25CF",  label: "Active" },
+  draft:       { icon: "\uD83D\uDCC4", label: "Draft" },
+  staged:      { icon: "\uD83D\uDD04", label: "Staged" },
+  deprecated:  { icon: "\uD83D\uDCE6", label: "Deprecated" },
+  failed:      { icon: "\u2715",  label: "Failed" },
+};
 
 function StatusChip({ status }: { status: string }) {
-  const label = status.replace("_", " ");
-  const icons: Record<string, string> = {
-    pending: "⏳", in_review: "🔍", confirmed: "✅", rejected: "❌",
-    active: "✅", draft: "📝", staged: "🔄", quarantined: "🚫", deprecated: "📦",
-    anchored: "⚓", failed: "❌",
-  };
+  const meta = STATUS_META[status] ?? { icon: "\u2022", label: status };
   return (
     <span className={`chip chip-${status}`}>
-      {icons[status] ?? "•"} {label}
+      {meta.icon} {meta.label}
     </span>
   );
 }
+
+// --- helpers -----------------------------------------------------------------
 
 function ScoreBar({ score }: { score: number }) {
   const cls = score >= 0.8 ? "score-high" : score >= 0.6 ? "score-medium" : "score-low";
@@ -83,54 +168,189 @@ function ScoreBar({ score }: { score: number }) {
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function useFetch<T>(url: string, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+// --- Banners -----------------------------------------------------------------
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setData(await r.json());
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, ...deps]);
-
-  useEffect(() => { load(); }, [load]);
-  return { data, loading, error, reload: load };
+function StalenessBanner({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <div className="banner banner-warning" style={{ marginBottom: 16 }}>
+      {"\u26A0"} <div>
+        <strong>API unreachable</strong> {"\u2014"} Showing last-known-good cached data (read-only).
+        Actions are disabled until the API comes back online.
+      </div>
+    </div>
+  );
 }
 
-// ─── views ───────────────────────────────────────────────────────────────────
+function ConflictBanner({ show, onDismiss }: { show: boolean; onDismiss: () => void }) {
+  if (!show) return null;
+  return (
+    <div className="banner banner-warning" style={{ marginBottom: 16, cursor: "pointer" }} onClick={onDismiss}>
+      {"\u26A0"} <div>
+        <strong>409 Conflict</strong> {"\u2014"} Another analyst already confirmed this cluster.
+        The view has been refreshed.{" "}
+        <span style={{ textDecoration: "underline" }}>Dismiss</span>
+      </div>
+    </div>
+  );
+}
+
+function NoActorBanner() {
+  return (
+    <div className="banner banner-warning" style={{ marginBottom: 16 }}>
+      {"\u26A0"} <div>
+        <strong>No identity set</strong> {"\u2014"} Enter your analyst name in the sidebar before confirming or rejecting clusters.
+      </div>
+    </div>
+  );
+}
+
+// --- RawSampleViewer - up to 5 representative samples (design.md §2.2) --------
+
+function RawSampleViewer({ items }: { items: QueueItem[] }) {
+  const samples = items.slice(0, 5);
+  if (!samples.length) {
+    return <div className="raw-viewer" style={{ color: "var(--text-muted)" }}>No samples available</div>;
+  }
+  return (
+    <div>
+      {samples.map((item, idx) => {
+        const fields = Object.entries(item.extracted_fields ?? {});
+        return (
+          <div key={item.lineage_id ?? idx} style={{ marginBottom: idx < samples.length - 1 ? 10 : 0 }}>
+            <div className="sample-header">
+              <span>Sample {idx + 1}</span>
+              <span>{item.lineage_id ? item.lineage_id.slice(0, 8) + "\u2026" : ""}</span>
+            </div>
+            <div className="raw-viewer">
+              {fields.length > 0
+                ? fields.map(([k, v], i) => (
+                  <div key={k} className="raw-line">
+                    <span className="raw-line-num">{i + 1}</span>
+                    <span className="raw-line-content">
+                      <span style={{ color: "var(--text-muted)" }}>{k}</span>
+                      <span style={{ color: "var(--border)" }}>=</span>
+                      <span style={{ color: "var(--text-primary)" }}>{String(v)}</span>
+                    </span>
+                  </div>
+                ))
+                : (
+                  <div className="raw-line">
+                    <span className="raw-line-num">1</span>
+                    <span className="raw-line-content" style={{ color: "var(--text-primary)" }}>
+                      {item.sample_raw_pointer || "(no extracted fields)"}
+                    </span>
+                  </div>
+                )
+              }
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// --- FieldMappingRow - dropdown + free-text escape hatch (design.md §2.2/§2.4) -
+
+interface FieldMappingRowProps {
+  field: string;
+  info: CandidateField;
+  override: string | undefined;
+  onChange: (val: string) => void;
+  readonly: boolean;
+}
+
+function FieldMappingRow({ field, info, override, onChange, readonly }: FieldMappingRowProps) {
+  const [customMode, setCustomMode] = useState(false);
+  const currentVal = override ?? info.candidate_ocsf_attribute;
+
+  const allCandidates = [
+    info.candidate_ocsf_attribute,
+    ...(info.alternate_candidates?.map(c => c.attribute) ?? []),
+  ];
+  const showCustomInput = customMode || (override !== undefined && !allCandidates.includes(override));
+
+  return (
+    <tr>
+      <td><span className="raw-token">{field}</span></td>
+      <td>
+        {readonly ? (
+          <span className="ocsf-attr">{currentVal}</span>
+        ) : showCustomInput ? (
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input
+              type="text"
+              value={currentVal}
+              onChange={e => onChange(e.target.value)}
+              placeholder="OCSF attribute path..."
+              autoFocus
+              style={{
+                flex: 1, background: "var(--bg-base)", color: "var(--text-primary)",
+                border: "1px solid var(--primary)", borderRadius: "var(--radius-sm)",
+                padding: "4px 8px", fontSize: 12, fontFamily: "monospace",
+              }}
+            />
+            <button
+              className="btn btn-sm btn-secondary"
+              title="Reset to suggested"
+              onClick={() => { setCustomMode(false); onChange(info.candidate_ocsf_attribute); }}
+            >{"\u21A9"}</button>
+          </div>
+        ) : (
+          <select
+            value={currentVal}
+            onChange={e => {
+              if (e.target.value === "__custom__") { setCustomMode(true); return; }
+              onChange(e.target.value);
+            }}
+            style={{
+              width: "100%", background: "var(--bg-elevated)", color: "var(--primary-text)",
+              border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+              padding: "4px 8px", fontSize: 12, fontFamily: "monospace",
+            }}
+          >
+            <option value={info.candidate_ocsf_attribute}>{info.candidate_ocsf_attribute}</option>
+            {info.alternate_candidates?.map(c => (
+              <option key={c.attribute} value={c.attribute}>
+                {c.attribute} ({c.similarity_score.toFixed(2)})
+              </option>
+            ))}
+            <option value="__custom__">Custom...</option>
+          </select>
+        )}
+      </td>
+      <td><ScoreBar score={info.similarity_score} /></td>
+    </tr>
+  );
+}
+
+// --- DashboardView -----------------------------------------------------------
 
 function DashboardView() {
-  const { data: stats, loading, error } = useFetch<Stats>(`${API}/stats`);
-  const { data: clusters } = useFetch<{ clusters: Cluster[] }>(`${API}/queue/clusters`);
+  const { data: stats, loading, error, stale } = useFetch<Stats>(`${API}/stats`);
+  const { data: clustersPage } = useFetch<ClustersPage>(`${API}/queue/clusters?limit=5`);
   const { data: packs } = useFetch<{ packs: Pack[] }>(`${API}/packs`);
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><span className="spinner" /></div>;
-  if (error) return <div className="banner banner-danger">⚠ {error} — is review-api running on port 4000?</div>;
+  if (error && !stale) return <div className="banner banner-danger">{"\u26A0"} {error} {"\u2014"} is review-api running on port 4000?</div>;
   if (!stats) return null;
 
   const counts: Record<string, number> = {};
   for (const { status, count } of stats.status_counts) counts[status] = count;
-
   const totalEvents = stats.merkle_chunks.reduce((a, c) => a + (c.total_events ?? 0), 0);
   const anchored = stats.merkle_chunks.find(c => c.anchor_status === "anchored");
 
   return (
     <>
+      <StalenessBanner show={!!stale} />
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-label">Pending Review</div>
@@ -164,14 +384,16 @@ function DashboardView() {
       <div className="grid-2">
         <div className="card">
           <div className="card-title">Queue by Status</div>
-          {stats.status_counts.map(s => (
-            <div key={s.status} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-              <StatusChip status={s.status} />
-              <span style={{ fontWeight: 700, fontSize: 15 }}>{s.count}</span>
-            </div>
-          ))}
+          {stats.status_counts.length === 0
+            ? <div className="text-muted">No items in queue</div>
+            : stats.status_counts.map(s => (
+              <div key={s.status} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--border-subtle)" }}>
+                <StatusChip status={s.status} />
+                <span style={{ fontWeight: 700, fontSize: 15 }}>{s.count}</span>
+              </div>
+            ))
+          }
         </div>
-
         <div className="card">
           <div className="card-title">Analyst Workload</div>
           {stats.analyst_load.length === 0
@@ -181,10 +403,11 @@ function DashboardView() {
                 <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>{a.assigned_analyst}</span>
                 <span className="pill pill-blue">{a.count} clusters</span>
               </div>
-            ))}
+            ))
+          }
           {stats.oldest_pending && (
             <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--warning-dim)", borderRadius: "var(--radius-md)", border: "1px solid rgba(245,158,11,0.2)" }}>
-              <div style={{ fontSize: 11, color: "var(--warning)", fontWeight: 600, marginBottom: 4 }}>⚠ OLDEST UNRESOLVED</div>
+              <div style={{ fontSize: 11, color: "var(--warning)", fontWeight: 600, marginBottom: 4 }}>{"\u26A0"} OLDEST UNRESOLVED</div>
               <div style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-secondary)" }}>{stats.oldest_pending.cluster_id}</div>
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{timeAgo(stats.oldest_pending.oldest_at)}</div>
             </div>
@@ -194,200 +417,254 @@ function DashboardView() {
 
       <div className="card mt-6">
         <div className="card-title">Recent Clusters</div>
-        {clusters && clusters.clusters.slice(0, 5).map(c => (
-          <div key={c.cluster_id} style={{ display: "flex", gap: 16, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--border-subtle)" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-accent)" }}>{c.cluster_id}</div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{c.source_type} · {c.sample_count} samples · {timeAgo(c.oldest_at)}</div>
+        {clustersPage && clustersPage.clusters.length > 0
+          ? clustersPage.clusters.map(c => (
+            <div key={c.cluster_id} style={{ display: "flex", gap: 16, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--border-subtle)" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-accent)" }}>{c.cluster_id}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{c.source_type ?? "unknown"} {"\u00B7"} {c.sample_count} samples {"\u00B7"} {timeAgo(c.oldest_at)}</div>
+              </div>
+              <StatusChip status={c.status} />
             </div>
-            <StatusChip status={c.status} />
-          </div>
-        ))}
+          ))
+          : <div className="text-muted">No clusters yet</div>
+        }
       </div>
     </>
   );
 }
+
+// --- QueueView - paginated, status-filtered, auto-refreshed ------------------
 
 function QueueView({ onClusterSelect }: { onClusterSelect: (id: string) => void }) {
   const [statusFilter, setStatusFilter] = useState("");
-  const url = `${API}/queue/clusters`;
-  const { data, loading, error, reload } = useFetch<{ clusters: Cluster[] }>(url);
+  const [page, setPage] = useState(1);
+  const LIMIT = 20;
+
+  const url = `${API}/queue/clusters?page=${page}&limit=${LIMIT}`;
+  const { data, loading, error, stale, reload } = useFetch<ClustersPage>(url);
+
+  // Auto-refresh queue every 10s (design.md §2.3)
+  useAutoRefresh(reload, 10000, true);
 
   const clusters = (data?.clusters ?? []).filter(c => !statusFilter || c.status === statusFilter);
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
   return (
     <>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <StalenessBanner show={!!stale} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         {["", "pending", "in_review", "confirmed", "rejected"].map(s => (
-          <button key={s} className={`btn btn-sm ${statusFilter === s ? "btn-primary" : "btn-secondary"}`}
-            onClick={() => setStatusFilter(s)}>
-            {s || "All"}
+          <button
+            key={s}
+            id={`queue-filter-${s || "all"}`}
+            className={`btn btn-sm ${statusFilter === s ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => { setStatusFilter(s); setPage(1); }}
+          >
+            {s ? s.replace("_", " ") : "All"}
           </button>
         ))}
-        <button className="btn btn-sm btn-secondary" onClick={reload} style={{ marginLeft: "auto" }}>↻ Refresh</button>
+        <button className="btn btn-sm btn-secondary" onClick={reload} style={{ marginLeft: "auto" }}>{"\u21BB"} Refresh</button>
       </div>
 
       {loading && <div style={{ textAlign: "center", padding: 40 }}><span className="spinner" /></div>}
-      {error && <div className="banner banner-danger">⚠ API unreachable — {error}</div>}
+      {error && !stale && <div className="banner banner-danger">{"\u26A0"} API unreachable {"\u2014"} {error}</div>}
 
       {!loading && clusters.length === 0 && (
         <div className="empty-state">
-          <div className="icon">🎉</div>
+          <div className="icon">{"\uD83C\uDF89"}</div>
           <h3>No clusters pending review</h3>
-          <p className="text-muted">All clusters have been processed</p>
+          <p className="text-muted">
+            {statusFilter ? `No clusters with status "${statusFilter}"` : "All clusters have been processed"}
+          </p>
         </div>
       )}
 
-      {!loading && clusters.length > 0 && (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Cluster ID</th>
-                <th>Source Type</th>
-                <th>Samples</th>
-                <th>Status</th>
-                <th>Analyst</th>
-                <th>Age</th>
-              </tr>
-            </thead>
-            <tbody>
-              {clusters.map(c => (
-                <tr key={c.cluster_id} onClick={() => onClusterSelect(c.cluster_id)}>
-                  <td><span className="text-mono" style={{ color: "var(--text-accent)" }}>{c.cluster_id}</span></td>
-                  <td><span className="pill pill-blue">{c.source_type ?? "—"}</span></td>
-                  <td>{c.sample_count}</td>
-                  <td><StatusChip status={c.status} /></td>
-                  <td className="text-muted">{c.assigned_analyst ?? "—"}</td>
-                  <td className="text-muted">{timeAgo(c.oldest_at)}</td>
+      {clusters.length > 0 && (
+        <>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cluster ID</th><th>Source Type</th><th>Samples</th>
+                  <th>Status</th><th>Analyst</th><th>Age</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {clusters.map(c => (
+                  <tr key={c.cluster_id} onClick={() => onClusterSelect(c.cluster_id)} style={{ cursor: "pointer" }}>
+                    <td><span className="text-mono" style={{ color: "var(--text-accent)" }}>{c.cluster_id}</span></td>
+                    <td><span className="pill pill-blue">{c.source_type ?? "\u2014"}</span></td>
+                    <td>{c.sample_count}</td>
+                    <td><StatusChip status={c.status} /></td>
+                    <td className="text-muted">{c.assigned_analyst ?? "\u2014"}</td>
+                    <td className="text-muted">{timeAgo(c.oldest_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="pagination">
+              <button className="btn btn-sm btn-secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{"\u2190"} Prev</button>
+              <span className="text-muted">Page {page} of {totalPages} {"\u00B7"} {total} total</span>
+              <button className="btn btn-sm btn-secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next {"\u2192"}</button>
+            </div>
+          )}
+        </>
       )}
     </>
   );
 }
 
-function ClusterDetail({ clusterId, onBack }: { clusterId: string; onBack: () => void }) {
-  const { data, loading, error, reload } = useFetch<{
-    cluster_id: string; status: string; source_type: string;
-    sample_count: number; oldest_at: string; assigned_analyst: string | null;
-    items: QueueItem[]; candidate_mapping: Record<string, CandidateField>;
-    sample_raw_pointer: string;
-  }>(`${API}/queue/clusters/${clusterId}`);
+// --- ClusterDetail - 3s polling, free-text override, rollback -----------------
 
+function ClusterDetail({ clusterId, onBack, actor }: { clusterId: string; onBack: () => void; actor: string }) {
+  const { data, loading, error, stale, reload } = useFetch<ClusterDetailData>(
+    `${API}/queue/clusters/${clusterId}`
+  );
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
 
-  const sampleFields = data ? Object.entries(data.items[0]?.extracted_fields ?? {}) : [];
+  // 3s auto-poll while status is transitional (design.md §2.3)
+  const transitional = !!data?.status && ["pending", "in_review", "confirmed", "signed"].includes(data.status);
+  useAutoRefresh(reload, 3000, transitional && !stale);
+
   const mapping = data?.candidate_mapping ?? {};
+  const isReadonly = !data || !["pending", "in_review"].includes(data.status);
+  const canAct = !!actor && !isReadonly && !stale && !submitting;
+
+  // Confidence scores fallback: from items[0].confidence_scores or candidate_mapping similarity
+  const confidenceScores: Record<string, number> = {};
+  if (data?.items?.[0]?.confidence_scores && Object.keys(data.items[0].confidence_scores).length > 0) {
+    Object.assign(confidenceScores, data.items[0].confidence_scores);
+  } else if (mapping && Object.keys(mapping).length > 0) {
+    for (const [k, v] of Object.entries(mapping)) {
+      if (typeof v?.similarity_score === "number") {
+        confidenceScores[k] = v.similarity_score;
+      }
+    }
+  }
 
   async function handleConfirm() {
+    if (!actor) return;
     setSubmitting(true); setConflict(false);
     const confirmed = Object.fromEntries(
       Object.entries(mapping).map(([k, v]) => [k, { ...v, candidate_ocsf_attribute: overrides[k] ?? v.candidate_ocsf_attribute }])
     );
     const r = await fetch(`${API}/queue/clusters/${clusterId}/confirm`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor: "analyst:jdoe", confirmed_mapping: confirmed }),
+      body: JSON.stringify({ actor, confirmed_mapping: confirmed }),
     });
     setSubmitting(false);
-    if (r.status === 409) { setConflict(true); return; }
+    if (r.status === 409) { setConflict(true); reload(); return; }
     reload();
   }
 
   async function handleReject() {
+    if (!actor) return;
     setSubmitting(true);
     await fetch(`${API}/queue/clusters/${clusterId}/reject`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor: "analyst:jdoe" }),
+      body: JSON.stringify({ actor }),
     });
     setSubmitting(false); reload();
   }
 
   async function handleAssign() {
+    if (!actor) return;
     await fetch(`${API}/queue/clusters/${clusterId}/assign`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor: "analyst:jdoe" }),
+      body: JSON.stringify({ actor }),
     });
     reload();
   }
 
+  async function handleRollback() {
+    if (!actor) return;
+    setSubmitting(true);
+    await fetch(`${API}/queue/clusters/${clusterId}/rollback`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actor }),
+    });
+    setSubmitting(false); reload();
+  }
+
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><span className="spinner" /></div>;
-  if (error) return <div className="banner banner-danger">⚠ {error}</div>;
+  if (error && !stale) return <div className="banner banner-danger">{"\u26A0"} {error}</div>;
   if (!data) return null;
 
   return (
     <>
-      <button className="btn btn-secondary btn-sm" onClick={onBack} style={{ marginBottom: 20 }}>← Back to Queue</button>
+      <button id="cluster-back-btn" className="btn btn-secondary btn-sm" onClick={onBack} style={{ marginBottom: 20 }}>
+        {"\u2190"} Back to Queue
+      </button>
 
-      {conflict && (
-        <div className="banner banner-warning">
-          ⚠ <div><strong>409 Conflict</strong> — Another analyst has already confirmed this cluster. Refresh to see the current state.</div>
-        </div>
-      )}
+      <ConflictBanner show={conflict} onDismiss={() => setConflict(false)} />
+      <StalenessBanner show={!!stale} />
+      {!actor && <NoActorBanner />}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
         <div>
-          <h2 style={{ fontFamily: "monospace", fontSize: 16, color: "var(--text-accent)", marginBottom: 4 }}>{data.cluster_id}</h2>
+          <h2 style={{ fontFamily: "monospace", fontSize: 16, color: "var(--text-accent)", marginBottom: 6 }}>{data.cluster_id}</h2>
           <div className="gap-2">
             <StatusChip status={data.status} />
-            <span className="pill pill-blue">{data.source_type}</span>
-            <span className="text-muted">{data.sample_count} samples · {timeAgo(data.oldest_at)}</span>
+            {data.source_type && <span className="pill pill-blue">{data.source_type}</span>}
+            <span className="text-muted">{data.sample_count} samples {"\u00B7"} {timeAgo(data.oldest_at)}</span>
             {data.assigned_analyst && <span className="text-muted">Assigned: {data.assigned_analyst}</span>}
+            {transitional && !stale && <span className="poll-indicator">{"\u25CF"} live</span>}
           </div>
         </div>
-        <div className="gap-2">
+        <div className="gap-2" style={{ flexWrap: "wrap" }}>
           {data.status === "pending" && (
-            <button className="btn btn-secondary" onClick={handleAssign}>👤 Assign to Me</button>
+            <button id="cluster-assign-btn" className="btn btn-secondary" onClick={handleAssign} disabled={!actor || !!stale}>
+              {"\uD83D\uDC64"} Assign to Me
+            </button>
           )}
           {(data.status === "pending" || data.status === "in_review") && (
             <>
-              <button className="btn btn-danger" onClick={handleReject} disabled={submitting}>✗ Reject</button>
-              <button className="btn btn-primary" onClick={handleConfirm} disabled={submitting}>
-                {submitting ? <span className="spinner" /> : "✓ Confirm Mapping"}
+              <button id="cluster-reject-btn" className="btn btn-danger" onClick={handleReject} disabled={!canAct}>
+                {"\u2715"} Reject
+              </button>
+              <button id="cluster-confirm-btn" className="btn btn-primary" onClick={handleConfirm} disabled={!canAct}>
+                {submitting ? <span className="spinner" /> : "\u2713 Confirm Mapping"}
               </button>
             </>
+          )}
+          {(data.status === "confirmed" || data.status === "rejected") && (
+            <button id="cluster-rollback-btn" className="btn btn-secondary" onClick={handleRollback} disabled={!actor || !!stale || submitting}>
+              {"\u21A9"} Rollback
+            </button>
           )}
         </div>
       </div>
 
       <div className="detail-pane">
-        {/* Left pane: raw sample */}
+        {/* Left: up to 5 raw samples + confidence scores */}
         <div>
-          <div className="section-title">Raw Sample</div>
-          <div className="raw-viewer">
-            {sampleFields.map(([k, v], i) => (
-              <div key={k} className="raw-line">
-                <span className="raw-line-num">{i + 1}</span>
-                <span className="raw-line-content">
-                  <span style={{ color: "var(--text-muted)" }}>{k}</span>
-                  <span style={{ color: "var(--border)" }}>=</span>
-                  <span style={{ color: "var(--text-primary)" }}>{String(v)}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-
+          <div className="section-title">Raw Samples {"\u2014"} {Math.min(data.items.length, 5)} of {data.items.length}</div>
+          <RawSampleViewer items={data.items} />
           <div className="mt-4">
             <div className="section-title">Confidence Scores</div>
             <div className="card" style={{ padding: "12px 14px" }}>
-              {Object.entries(data.items[0]?.confidence_scores ?? {}).map(([field, score]) => (
+              {Object.entries(confidenceScores).map(([field, score]) => (
                 <div key={field} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid var(--border-subtle)" }}>
                   <span className="raw-token">{field}</span>
                   <ScoreBar score={score as number} />
                 </div>
               ))}
+              {Object.keys(confidenceScores).length === 0 && (
+                <div className="text-muted">No confidence scores available</div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Right pane: field mapping */}
+        {/* Right: field -> OCSF mapping with free-text override */}
         <div>
-          <div className="section-title">Field → OCSF Mapping</div>
+          <div className="section-title">Field {"\u2192"} OCSF Mapping</div>
           <div className="table-wrap">
             <table className="mapping-table">
               <thead>
@@ -395,34 +672,29 @@ function ClusterDetail({ clusterId, onBack }: { clusterId: string; onBack: () =>
               </thead>
               <tbody>
                 {Object.entries(mapping).map(([field, info]) => (
-                  <tr key={field}>
-                    <td><span className="raw-token">{field}</span></td>
-                    <td>
-                      {(data.status === "pending" || data.status === "in_review") ? (
-                        <select
-                          value={overrides[field] ?? info.candidate_ocsf_attribute}
-                          onChange={e => setOverrides(o => ({ ...o, [field]: e.target.value }))}
-                          style={{ background: "var(--bg-elevated)", color: "var(--primary-text)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "4px 8px", fontSize: 12, fontFamily: "monospace", width: "100%" }}
-                        >
-                          <option value={info.candidate_ocsf_attribute}>{info.candidate_ocsf_attribute}</option>
-                          {info.alternate_candidates?.map(c => (
-                            <option key={c.attribute} value={c.attribute}>{c.attribute} ({c.similarity_score.toFixed(2)})</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="ocsf-attr">{info.candidate_ocsf_attribute}</span>
-                      )}
-                    </td>
-                    <td><ScoreBar score={info.similarity_score} /></td>
-                  </tr>
+                  <FieldMappingRow
+                    key={field}
+                    field={field}
+                    info={info}
+                    override={overrides[field]}
+                    onChange={val => setOverrides(o => ({ ...o, [field]: val }))}
+                    readonly={isReadonly}
+                  />
                 ))}
+                {Object.keys(mapping).length === 0 && (
+                  <tr>
+                    <td colSpan={3} style={{ textAlign: "center", color: "var(--text-muted)", padding: 20 }}>
+                      No mapping candidates available
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
 
-          <div className="mt-4" style={{ padding: "10px 14px", background: "var(--bg-elevated)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>SAMPLE POINTER</div>
-            <div className="text-mono" style={{ color: "var(--text-secondary)" }}>{data.sample_raw_pointer}</div>
+          <div className="card mt-4">
+            <div className="section-title" style={{ marginBottom: 6 }}>Sample Pointer</div>
+            <div className="text-mono" style={{ color: "var(--text-secondary)" }}>{data.sample_raw_pointer || "\u2014"}</div>
           </div>
         </div>
       </div>
@@ -430,28 +702,83 @@ function ClusterDetail({ clusterId, onBack }: { clusterId: string; onBack: () =>
   );
 }
 
+// --- PacksView ---------------------------------------------------------------
+
 function PacksView() {
-  const { data, loading } = useFetch<{ packs: Pack[] }>(`${API}/packs`);
-  const packs = data?.packs ?? [];
+  const { data, loading, error, stale, reload } = useFetch<{ packs: Pack[] }>(`${API}/packs`);
+  const [filter, setFilter] = useState("");
+  const [acting, setActing] = useState<string | null>(null);
+
+  async function handleRollback(pack: Pack) {
+    if (!confirm(`Rollback pack ${pack.pack_id}? Status will become quarantined.`)) return;
+    setActing(pack.pack_id);
+    await fetch(`${API}/packs/${pack.pack_id}/rollback`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actor: "analyst:review_ui" }),
+    });
+    setActing(null); reload();
+  }
+
+  const packs = (data?.packs ?? []).filter(p => !filter || p.status === filter);
 
   return (
     <>
+      <StalenessBanner show={!!stale} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        {["", "active", "quarantined", "draft", "staged"].map(s => (
+          <button
+            key={s}
+            id={`packs-filter-${s || "all"}`}
+            className={`btn btn-sm ${filter === s ? "btn-primary" : "btn-secondary"}`}
+            onClick={() => setFilter(s)}
+          >
+            {s ? s.replace("_", " ") : "All"}
+          </button>
+        ))}
+        <button className="btn btn-sm btn-secondary" onClick={reload} style={{ marginLeft: "auto" }}>{"\u21BB"} Refresh</button>
+      </div>
+
       {loading && <div style={{ textAlign: "center", padding: 40 }}><span className="spinner" /></div>}
-      {!loading && (
+      {error && !stale && <div className="banner banner-danger">{"\u26A0"} {error}</div>}
+
+      {!loading && packs.length === 0 && (
+        <div className="empty-state">
+          <div className="icon">{"\uD83D\uDCE6"}</div>
+          <h3>No mapping packs found</h3>
+          <p className="text-muted">{filter ? `No packs with status "${filter}"` : "No packs registered"}</p>
+        </div>
+      )}
+
+      {packs.length > 0 && (
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Pack ID</th><th>Source Type</th><th>Version</th><th>Status</th><th>Created</th><th>Promoted</th></tr>
+              <tr>
+                <th>Pack ID</th><th>Source Type</th><th>Version</th>
+                <th>Status</th><th>Created</th><th>Promoted</th><th>Action</th>
+              </tr>
             </thead>
             <tbody>
               {packs.map(p => (
                 <tr key={p.pack_id}>
-                  <td className="text-mono" style={{ color: "var(--text-accent)" }}>{p.pack_id}</td>
+                  <td><span className="text-mono" style={{ color: "var(--text-accent)" }}>{p.pack_id}</span></td>
                   <td><span className="pill pill-blue">{p.source_type}</span></td>
-                  <td className="text-mono">{p.version}</td>
+                  <td><span className="text-mono">{p.version}</span></td>
                   <td><StatusChip status={p.status} /></td>
                   <td className="text-muted">{timeAgo(p.created_at)}</td>
-                  <td className="text-muted">{p.promoted_at ? timeAgo(p.promoted_at) : "—"}</td>
+                  <td className="text-muted">{p.promoted_at ? timeAgo(p.promoted_at) : "\u2014"}</td>
+                  <td>
+                    {p.status === "active" && (
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => handleRollback(p)}
+                        disabled={acting === p.pack_id}
+                        title="Rollback pack to quarantined"
+                      >
+                        {acting === p.pack_id ? <span className="spinner" /> : "\u21A9 Rollback"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -462,64 +789,74 @@ function PacksView() {
   );
 }
 
+// --- TraceView ---------------------------------------------------------------
+
 function TraceView() {
   const [lineageId, setLineageId] = useState("");
   const [result, setResult] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [mode, setMode] = useState<"trace" | "verify" | null>(null);
 
-  async function handleTrace() {
-    setLoading(true); setError(""); setResult(null);
+  async function doRequest(endpoint: string, m: "trace" | "verify") {
+    const id = lineageId.trim();
+    if (!id) return;
+    setLoading(true); setError(""); setResult(null); setMode(m);
     try {
-      const r = await fetch(`${API}/trace/${lineageId.trim()}`);
-      if (!r.ok) { setError(`Not found (${r.status})`); return; }
+      const r = await fetch(`${API}/${endpoint}/${id}`);
+      if (!r.ok) { setError(`HTTP ${r.status} \u2014 lineage_id not found`); return; }
       setResult(await r.json());
     } catch (e) { setError(String(e)); } finally { setLoading(false); }
   }
 
-  async function handleVerify() {
-    setLoading(true); setError(""); setResult(null);
-    try {
-      const r = await fetch(`${API}/verify/${lineageId.trim()}`);
-      if (!r.ok) { setError(`Not found (${r.status})`); return; }
-      setResult(await r.json());
-    } catch (e) { setError(String(e)); } finally { setLoading(false); }
-  }
-
-  const SAMPLE_IDS = [
-    "11111111-0000-4000-a000-000000000001",
-    "22222222-0000-4000-a000-000000000001",
-    "33333333-0000-4000-a000-000000000001",
-    "44444444-0000-4000-a000-000000000001",
-  ];
+  const verifyResult = mode === "verify" && result !== null && typeof result === "object"
+    ? result as { verified: boolean; proof_message?: string }
+    : null;
 
   return (
     <>
       <div className="card mb-4">
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <input
-            value={lineageId} onChange={e => setLineageId(e.target.value)}
-            placeholder="Enter lineage_id (UUID)…"
-            style={{ flex: 1, minWidth: 280, background: "var(--bg-elevated)", color: "var(--text-primary)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "8px 12px", fontSize: 13, fontFamily: "monospace" }}
+            id="trace-input"
+            value={lineageId}
+            onChange={e => setLineageId(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && lineageId && doRequest("trace", "trace")}
+            placeholder="Enter lineage_id (UUID)..."
+            style={{
+              flex: 1, minWidth: 280, background: "var(--bg-elevated)", color: "var(--text-primary)",
+              border: "1px solid var(--border)", borderRadius: "var(--radius-md)",
+              padding: "8px 12px", fontSize: 13, fontFamily: "monospace",
+            }}
           />
-          <button className="btn btn-secondary" onClick={handleTrace} disabled={!lineageId || loading}>🔍 Trace</button>
-          <button className="btn btn-secondary" onClick={handleVerify} disabled={!lineageId || loading}>⚓ Verify</button>
+          <button id="trace-btn" className="btn btn-secondary" onClick={() => doRequest("trace", "trace")} disabled={!lineageId || loading}>{"\uD83D\uDD0D"} Trace</button>
+          <button id="verify-btn" className="btn btn-secondary" onClick={() => doRequest("verify", "verify")} disabled={!lineageId || loading}>{"\u2693"} Verify</button>
         </div>
-        <div style={{ marginTop: 10 }}>
-          <span style={{ fontSize: 11, color: "var(--text-muted)", marginRight: 8 }}>Quick fill:</span>
-          {SAMPLE_IDS.map(id => (
-            <button key={id} className="btn btn-sm btn-secondary" style={{ marginRight: 6, marginTop: 4 }}
-              onClick={() => setLineageId(id)}>{id.slice(0, 8)}…</button>
-          ))}
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-muted)" }}>
+          <strong>Trace</strong> {"\u2014"} forward pipeline trace from ingestion to OCSF output. &nbsp;
+          <strong>Verify</strong> {"\u2014"} Merkle proof and anchor status for a specific event.
         </div>
       </div>
 
-      {error && <div className="banner banner-danger">⚠ {error}</div>}
+      {error && <div className="banner banner-danger">{"\u26A0"} {error}</div>}
       {loading && <div style={{ textAlign: "center", padding: 30 }}><span className="spinner" /></div>}
+
       {result && (
         <div className="card">
-          <div className="card-title">Result</div>
-          <pre style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 500, overflow: "auto" }}>
+          <div className="card-title">
+            {mode === "verify" ? "\u2693 Merkle Verification" : "\uD83D\uDD0D Forward Trace"}
+          </div>
+          {verifyResult && (
+            <div className={verifyResult.verified ? "verify-ok" : "verify-warn"}>
+              {verifyResult.verified
+                ? "\u2713 Merkle proof valid \u2014 event anchored"
+                : `\u23F3 ${verifyResult.proof_message ?? "Batch pending anchoring \u2014 cannot verify yet"}`}
+            </div>
+          )}
+          <pre style={{
+            fontFamily: "monospace", fontSize: 12, color: "var(--text-secondary)",
+            whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 500, overflow: "auto",
+          }}>
             {JSON.stringify(result, null, 2)}
           </pre>
         </div>
@@ -528,7 +865,63 @@ function TraceView() {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// --- AnalystInput - sidebar identity widget (design.md §5, §2.4) --------------
+
+function AnalystInput({ actor, onChange }: { actor: string; onChange: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(actor);
+
+  useEffect(() => {
+    setDraft(actor);
+    setEditing(!actor);
+  }, [actor]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    onChange(trimmed);
+    setEditing(false);
+  }
+
+  return (
+    <div className="analyst-section">
+      <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+        Analyst Identity
+      </div>
+      {editing ? (
+        <div style={{ display: "flex", gap: 4 }}>
+          <input
+            id="analyst-name-input"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && commit()}
+            placeholder="your-name..."
+            style={{
+              flex: 1, background: "var(--bg-elevated)", color: "var(--text-primary)",
+              border: "1px solid var(--primary)", borderRadius: "var(--radius-sm)",
+              padding: "5px 8px", fontSize: 12,
+            }}
+          />
+          <button id="analyst-save-btn" className="btn btn-sm btn-primary" disabled={!draft.trim()} onClick={commit}>{"\u2713"}</button>
+        </div>
+      ) : (
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "4px 0" }}
+          onClick={() => { setDraft(actor); setEditing(true); }}
+          title="Click to change identity"
+        >
+          <div className="analyst-avatar">{(actor || "?").slice(0, 1).toUpperCase()}</div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>{actor || "Not set"}</div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>click to change</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Main App -----------------------------------------------------------------
 
 type View = "dashboard" | "queue" | "cluster" | "packs" | "trace";
 
@@ -537,8 +930,33 @@ export default function Home() {
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
   const [apiOk, setApiOk] = useState<boolean | null>(null);
 
+  // Analyst identity - persisted to localStorage (design.md §5: never anonymous)
+  const [actor, setActor] = useState<string>("");
+
   useEffect(() => {
-    fetch(`${API}/health`).then(r => setApiOk(r.ok)).catch(() => setApiOk(false));
+    try {
+      const stored = localStorage.getItem("ulpf_actor");
+      if (stored) setActor(stored);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  function setActorPersisted(v: string) {
+    setActor(v);
+    try {
+      if (typeof window !== "undefined") localStorage.setItem("ulpf_actor", v);
+    } catch {
+      // ignore
+    }
+  }
+
+  // API health check every 5s
+  useEffect(() => {
+    const check = () => fetch(`${API}/health`).then(r => setApiOk(r.ok)).catch(() => setApiOk(false));
+    check();
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
   }, []);
 
   function nav(v: View) { setView(v); setSelectedCluster(null); }
@@ -552,15 +970,14 @@ export default function Home() {
   };
   const pageSub: Record<View, string> = {
     dashboard: "System health and analyst workload overview",
-    queue: "Pending clusters awaiting analyst review",
-    cluster: "Field-by-field mapping review",
-    packs: "Mapping pack registry",
-    trace: "Forward trace and Merkle verification",
+    queue: "Clusters awaiting analyst review \u2014 sorted by volume",
+    cluster: "Field-by-field mapping review and confirmation",
+    packs: "Mapping pack registry \u2014 all statuses",
+    trace: "Forward trace and Merkle anchor verification by lineage_id",
   };
 
   return (
     <div className="layout">
-      {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-logo">
           <div className="logo-icon">U</div>
@@ -572,40 +989,46 @@ export default function Home() {
 
         <div className="nav-section">
           <div className="nav-label">Overview</div>
-          <button className={`nav-item ${view === "dashboard" ? "active" : ""}`} onClick={() => nav("dashboard")}>
-            <span className="nav-icon">📊</span> Dashboard
+          <button id="nav-dashboard" className={`nav-item ${view === "dashboard" ? "active" : ""}`} onClick={() => nav("dashboard")}>
+            <span className="nav-icon">{"\uD83D\uDCCA"}</span> Dashboard
           </button>
         </div>
 
         <div className="nav-section">
           <div className="nav-label">Review</div>
-          <button className={`nav-item ${view === "queue" || view === "cluster" ? "active" : ""}`} onClick={() => nav("queue")}>
-            <span className="nav-icon">📋</span> Queue
+          <button id="nav-queue" className={`nav-item ${view === "queue" || view === "cluster" ? "active" : ""}`} onClick={() => nav("queue")}>
+            <span className="nav-icon">{"\uD83D\uDCCB"}</span> Queue
           </button>
-          <button className={`nav-item ${view === "packs" ? "active" : ""}`} onClick={() => nav("packs")}>
-            <span className="nav-icon">📦</span> Packs
+          <button id="nav-packs" className={`nav-item ${view === "packs" ? "active" : ""}`} onClick={() => nav("packs")}>
+            <span className="nav-icon">{"\uD83D\uDCE6"}</span> Packs
           </button>
         </div>
 
         <div className="nav-section">
           <div className="nav-label">Audit</div>
-          <button className={`nav-item ${view === "trace" ? "active" : ""}`} onClick={() => nav("trace")}>
-            <span className="nav-icon">🔍</span> Trace / Verify
+          <button id="nav-trace" className={`nav-item ${view === "trace" ? "active" : ""}`} onClick={() => nav("trace")}>
+            <span className="nav-icon">{"\uD83D\uDD0D"}</span> Trace / Verify
           </button>
         </div>
 
-        <div style={{ marginTop: "auto", padding: "10px 12px" }}>
+        <div style={{ padding: "8px 12px", marginTop: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: apiOk === true ? "var(--success)" : apiOk === false ? "var(--danger)" : "var(--text-muted)" }} />
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: apiOk === true ? "var(--success)" : apiOk === false ? "var(--danger)" : "var(--text-muted)",
+              boxShadow: apiOk === true ? "0 0 6px var(--success)" : "none",
+              transition: "all 0.3s",
+            }} />
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              API {apiOk === true ? "online" : apiOk === false ? "offline" : "checking…"}
+              API {apiOk === true ? "online" : apiOk === false ? "offline" : "checking..."}
             </span>
           </div>
-          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>localhost:4000</div>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>localhost:4000</div>
         </div>
+
+        <AnalystInput actor={actor} onChange={setActorPersisted} />
       </aside>
 
-      {/* Main */}
       <main className="main">
         <div className="main-header">
           <div>
@@ -613,8 +1036,8 @@ export default function Home() {
             <div className="sub">{pageSub[view]}</div>
           </div>
           {apiOk === false && (
-            <div className="banner banner-warning" style={{ margin: 0, padding: "8px 12px" }}>
-              ⚠ API offline — run: <code style={{ fontFamily: "monospace" }}>pnpm dev --filter @ulpf/review-api</code>
+            <div className="banner banner-warning" style={{ margin: 0, padding: "8px 12px", fontSize: 12 }}>
+              {"\u26A0"} API offline {"\u2014"} run: <code style={{ fontFamily: "monospace" }}>pnpm --filter @ulpf/review-api dev</code>
             </div>
           )}
         </div>
@@ -625,7 +1048,7 @@ export default function Home() {
             <QueueView onClusterSelect={id => { setSelectedCluster(id); setView("cluster"); }} />
           )}
           {view === "cluster" && selectedCluster && (
-            <ClusterDetail clusterId={selectedCluster} onBack={() => nav("queue")} />
+            <ClusterDetail clusterId={selectedCluster} onBack={() => nav("queue")} actor={actor} />
           )}
           {view === "packs" && <PacksView />}
           {view === "trace" && <TraceView />}
