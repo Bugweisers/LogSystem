@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 
 const API = "http://localhost:4000";
 
@@ -95,7 +95,7 @@ function useFetch<T>(url: string) {
   const load = useCallback(async () => {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const r = await fetch(url, { signal: controller.signal });
       clearTimeout(timeout);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -860,6 +860,7 @@ function LogCsvUploader({
 function DashboardView({ onTrace }: { onTrace?: (id: string) => void }) {
   const { data: stats, loading, error, stale, reload: reloadStats } = useFetch<Stats>(`${API}/stats`);
   const { data: clustersPage, reload: reloadClusters } = useFetch<ClustersPage>(`${API}/queue/clusters?limit=5`);
+  const { data: normData, reload: reloadNorm } = useFetch<{ total: number; items: NormalizedItem[] }>(`${API}/normalized?limit=5`);
   const { data: packs } = useFetch<{ packs: Pack[] }>(`${API}/packs`);
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><span className="spinner" /></div>;
@@ -896,6 +897,11 @@ function DashboardView({ onTrace }: { onTrace?: (id: string) => void }) {
           <div className="stat-sub">{anchored?.count ?? 0} chunks anchored</div>
         </div>
         <div className="stat-card">
+          <div className="stat-label">Normalized Events</div>
+          <div className="stat-value" style={{ color: "var(--success)" }}>{normData?.total ?? 0}</div>
+          <div className="stat-sub">OCSF 4001 Network Activity</div>
+        </div>
+        <div className="stat-card">
           <div className="stat-label">Active Packs</div>
           <div className="stat-value" style={{ color: "var(--success)" }}>
             {(packs?.packs ?? []).filter(p => p.status === "active").length}
@@ -905,11 +911,11 @@ function DashboardView({ onTrace }: { onTrace?: (id: string) => void }) {
       </div>
 
       {/* Universal Log CSV Ingestion Layer Studio */}
-      <LogCsvUploader onTrace={onTrace} onIngested={() => { reloadStats(); reloadClusters(); }} />
+      <LogCsvUploader onTrace={onTrace} onIngested={() => { reloadStats(); reloadClusters(); reloadNorm(); }} />
 
       <div className="grid-2">
         <div className="card">
-          <div className="card-title">Queue by Status</div>
+          <div className="card-title">Queue by Status (Cold Path)</div>
           {stats.status_counts.length === 0
             ? <div className="text-muted">No items in queue</div>
             : stats.status_counts.map(s => (
@@ -941,8 +947,64 @@ function DashboardView({ onTrace }: { onTrace?: (id: string) => void }) {
         </div>
       </div>
 
+      {/* Recent Normalized OCSF Events */}
       <div className="card mt-6">
-        <div className="card-title">Recent Clusters</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div className="card-title" style={{ margin: 0 }}>Recent Normalized OCSF Events (HOT Path)</div>
+          <span className="pill pill-green">{normData?.total ?? 0} Total Normalized</span>
+        </div>
+        {normData && normData.items.length > 0 ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Lineage ID</th>
+                  <th>OCSF Class</th>
+                  <th>Activity</th>
+                  <th>Endpoints</th>
+                  <th>Source</th>
+                  <th>Age</th>
+                  <th>Trace</th>
+                </tr>
+              </thead>
+              <tbody>
+                {normData.items.slice(0, 5).map(item => {
+                  const ocsf = item.ocsf_event;
+                  const src = ocsf?.src_endpoint?.ip ? `${ocsf.src_endpoint.ip}:${ocsf.src_endpoint.port || ""}` : (item.source_ip || "\u2014");
+                  const dst = ocsf?.dst_endpoint?.ip ? `${ocsf.dst_endpoint.ip}:${ocsf.dst_endpoint.port || ""}` : "\u2014";
+                  return (
+                    <tr key={item.lineage_id}>
+                      <td><span className="text-mono" style={{ color: "var(--text-accent)", fontSize: 11 }}>{item.lineage_id.slice(0, 8)}...</span></td>
+                      <td><span className="pill pill-green">OCSF {item.ocsf_class_uid}</span></td>
+                      <td><strong>{ocsf?.activity_name || "Traffic"}</strong></td>
+                      <td><span className="text-mono" style={{ fontSize: 11 }}>{src} {"\u2192"} {dst}</span></td>
+                      <td><span className="pill pill-blue">{item.source_type || "hot-path"}</span></td>
+                      <td className="text-muted">{timeAgo(item.normalized_at)}</td>
+                      <td>
+                        {onTrace && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-primary"
+                            onClick={() => onTrace(item.lineage_id)}
+                            style={{ fontSize: 10, padding: "2px 6px" }}
+                          >
+                            {"\uD83D\uDD0D"} Trace
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-muted">No normalized events yet</div>
+        )}
+      </div>
+
+      <div className="card mt-6">
+        <div className="card-title">Recent Clusters (Cold Path Awaiting Review)</div>
         {clustersPage && clustersPage.clusters.length > 0
           ? clustersPage.clusters.map(c => (
             <div key={c.cluster_id} style={{ display: "flex", gap: 16, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--border-subtle)" }}>
@@ -1398,6 +1460,290 @@ function TraceView({ initialLineageId }: { initialLineageId?: string }) {
   );
 }
 
+// --- NormalizedView - live stream of normalized OCSF 4001 logs ----------------
+
+interface NormalizedItem {
+  normalization_id: number;
+  lineage_id: string;
+  extraction_id: number;
+  ocsf_class_uid: number;
+  ocsf_event_json: string;
+  schema_valid: number;
+  normalized_at: string;
+  source_ip?: string;
+  transport_protocol?: string;
+  storage_pointer?: string;
+  source_type?: string;
+  path_taken?: string;
+  ocsf_event?: Record<string, any>;
+}
+
+function NormalizedView({ onTrace }: { onTrace: (id: string) => void }) {
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
+  const [search, setSearch] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const { data, loading, error, stale, reload } = useFetch<{ total: number; items: NormalizedItem[]; page?: number; limit?: number }>(
+    `${API}/normalized?page=${page}&limit=${limit}`
+  );
+  useAutoRefresh(reload, 5000, true);
+
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  const items = (data?.items ?? []).filter(item => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (
+      item.lineage_id.toLowerCase().includes(s) ||
+      (item.source_type || "").toLowerCase().includes(s) ||
+      (item.ocsf_event?.activity_name || "").toLowerCase().includes(s) ||
+      (item.ocsf_event?.src_endpoint?.ip || "").includes(s) ||
+      (item.ocsf_event?.dst_endpoint?.ip || "").includes(s)
+    );
+  });
+
+  return (
+    <>
+      <StalenessBanner show={!!stale} />
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setPage(1); }}
+          placeholder="Filter by lineage ID, source, IP, or activity..."
+          style={{
+            flex: 1, minWidth: 260,
+            background: "var(--bg-elevated)", color: "var(--text-primary)",
+            border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+            padding: "6px 12px", fontSize: 13,
+          }}
+        />
+        <select
+          value={limit}
+          onChange={e => { setLimit(Number(e.target.value)); setPage(1); }}
+          style={{
+            background: "var(--bg-elevated)", color: "var(--text-primary)",
+            border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+            padding: "6px 10px", fontSize: 12,
+          }}
+        >
+          <option value={10}>Show 10</option>
+          <option value={25}>Show 25</option>
+          <option value={50}>Show 50</option>
+          <option value={100}>Show 100</option>
+          <option value={200}>Show 200</option>
+        </select>
+        <button className="btn btn-sm btn-secondary" onClick={reload}>{"\u21BB"} Refresh</button>
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 40 }}><span className="spinner" /></div>}
+      {error && !stale && <div className="banner banner-danger">{"\u26A0"} {error}</div>}
+
+      {!loading && items.length === 0 && (
+        <div className="empty-state">
+          <div className="icon">{"\u26A1"}</div>
+          <h3>No normalized events found</h3>
+          <p className="text-muted">
+            Events matching active mapping packs (e.g. Cisco ASA) or confirmed clusters appear here automatically.
+          </p>
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Lineage ID</th>
+                  <th>OCSF Class</th>
+                  <th>Activity</th>
+                  <th>Endpoints (Src {"\u2192"} Dst)</th>
+                  <th>Schema</th>
+                  <th>Time</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(item => {
+                  let ocsf = item.ocsf_event;
+                  if (!ocsf || typeof ocsf !== "object") {
+                    try {
+                      ocsf = typeof item.ocsf_event_json === "string" ? JSON.parse(item.ocsf_event_json) : item.ocsf_event_json;
+                      if (typeof ocsf === "string") ocsf = JSON.parse(ocsf);
+                    } catch {
+                      ocsf = {};
+                    }
+                  }
+                  ocsf = ocsf || {};
+
+                  const isExpanded = expandedId === item.lineage_id;
+                  const src = ocsf?.src_endpoint?.ip ? `${ocsf.src_endpoint.ip}${ocsf.src_endpoint.port ? `:${ocsf.src_endpoint.port}` : ""}` : (item.source_ip || "\u2014");
+                  const dst = ocsf?.dst_endpoint?.ip ? `${ocsf.dst_endpoint.ip}${ocsf.dst_endpoint.port ? `:${ocsf.dst_endpoint.port}` : ""}` : "\u2014";
+                  const method = ocsf?.http_request?.http_method || "";
+                  const path = ocsf?.http_request?.url?.path || "";
+                  const statusCode = ocsf?.http_response?.code;
+
+                  return (
+                    <Fragment key={item.lineage_id}>
+                      <tr
+                        onClick={() => setExpandedId(isExpanded ? null : item.lineage_id)}
+                        style={{ cursor: "pointer", transition: "background 0.15s" }}
+                        className={isExpanded ? "row-selected" : ""}
+                      >
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ color: "var(--text-muted)", fontSize: 10 }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                            <span className="text-mono" style={{ color: "var(--text-accent)", fontSize: 12 }}>
+                              {item.lineage_id.slice(0, 8)}...{item.lineage_id.slice(-4)}
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="pill pill-green">
+                            {ocsf?.class_name ? `${ocsf.class_name} (${item.ocsf_class_uid})` : `Class ${item.ocsf_class_uid}`}
+                          </span>
+                        </td>
+                        <td>
+                          {method ? (
+                            <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                              <span className="pill pill-blue" style={{ fontSize: 10, padding: "1px 6px", fontWeight: 700 }}>{method}</span>
+                              <span className="text-mono" style={{ fontSize: 11 }}>{path || ocsf?.activity_name || "Traffic"}</span>
+                            </span>
+                          ) : (
+                            <span style={{ fontWeight: 600 }}>{ocsf?.activity_name || "Traffic"}</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className="text-mono" style={{ fontSize: 11 }}>
+                            {src} {dst !== "\u2014" ? `\u2192 ${dst}` : ""}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`pill ${item.schema_valid ? "pill-green" : "pill-red"}`}>
+                            {statusCode ? `${statusCode} \u00B7 Valid OCSF` : item.schema_valid ? "Valid OCSF" : "Invalid"}
+                          </span>
+                        </td>
+                        <td className="text-muted" style={{ fontSize: 11 }}>
+                          {timeAgo(item.normalized_at)}
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              className={`btn btn-sm ${isExpanded ? "btn-primary" : "btn-secondary"}`}
+                              onClick={() => setExpandedId(isExpanded ? null : item.lineage_id)}
+                              style={{ fontSize: 10, padding: "2px 6px" }}
+                            >
+                              {isExpanded ? "Close" : "Inspect"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => onTrace(item.lineage_id)}
+                              style={{ fontSize: 10, padding: "2px 6px" }}
+                            >
+                              {"\uD83D\uDD0D"} Trace
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={7} style={{ background: "var(--bg-surface)", padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 14 }}>
+                              <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                                <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Client Endpoint</div>
+                                <div className="text-mono" style={{ fontSize: 12, color: "var(--text-accent)", marginTop: 2 }}>{src}</div>
+                              </div>
+                              {method && (
+                                <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>HTTP Request</div>
+                                  <div className="text-mono" style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2 }}>{method} {path}</div>
+                                </div>
+                              )}
+                              {statusCode && (
+                                <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>HTTP Response</div>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--success)", marginTop: 2 }}>Status {statusCode}</div>
+                                </div>
+                              )}
+                              {ocsf?.traffic?.bytes_out !== undefined && (
+                                <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Response Payload</div>
+                                  <div className="text-mono" style={{ fontSize: 12, color: "var(--text-primary)", marginTop: 2 }}>{ocsf.traffic.bytes_out} bytes</div>
+                                </div>
+                              )}
+                              {ocsf?.time && (
+                                <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Log Event Time</div>
+                                  <div className="text-mono" style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{ocsf.time}</div>
+                                </div>
+                              )}
+                            </div>
+
+                            {ocsf?.http_request?.user_agent && (
+                              <div style={{ background: "var(--bg-elevated)", padding: "8px 12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)", marginBottom: 14 }}>
+                                <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>User Agent</div>
+                                <div className="text-mono" style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{ocsf.http_request.user_agent}</div>
+                              </div>
+                            )}
+
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>
+                                Complete Normalized OCSF 1.2.0 JSON Event:
+                              </span>
+                              <span className="text-mono" style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                                pointer: {item.storage_pointer || "\u2014"}
+                              </span>
+                            </div>
+
+                            <pre style={{
+                              background: "var(--bg-elevated)",
+                              padding: 12, borderRadius: "var(--radius-sm)",
+                              fontSize: 11, fontFamily: "monospace", overflow: "auto", maxHeight: 240, margin: 0,
+                              color: "var(--text-primary)", border: "1px solid var(--border-subtle)", lineHeight: 1.4
+                            }}>
+                              {JSON.stringify(ocsf, null, 2)}
+                            </pre>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {totalPages > 1 && (
+            <div className="pagination">
+              <button
+                className="btn btn-sm btn-secondary"
+                disabled={page <= 1}
+                onClick={() => setPage(p => p - 1)}
+              >
+                {"\u2190"} Prev
+              </button>
+              <span className="text-muted">
+                Page {page} of {totalPages} {"\u00B7"} {total} total
+              </span>
+              <button
+                className="btn btn-sm btn-secondary"
+                disabled={page >= totalPages}
+                onClick={() => setPage(p => p + 1)}
+              >
+                Next {"\u2192"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 // --- AnalystInput - sidebar identity widget (design.md §5, §2.4) --------------
 
 function AnalystInput({ actor, onChange }: { actor: string; onChange: (v: string) => void }) {
@@ -1456,7 +1802,7 @@ function AnalystInput({ actor, onChange }: { actor: string; onChange: (v: string
 
 // --- Main App -----------------------------------------------------------------
 
-type View = "dashboard" | "queue" | "cluster" | "packs" | "trace";
+type View = "dashboard" | "queue" | "cluster" | "packs" | "trace" | "normalized";
 
 export default function Home() {
   const [view, setView] = useState<View>("dashboard");
@@ -1499,16 +1845,18 @@ export default function Home() {
   const pageTitle: Record<View, string> = {
     dashboard: "Triage Dashboard",
     queue: "Review Queue",
-    cluster: "Cluster Detail",
+    cluster: "Cluster Detail & Auto-Onboarding",
     packs: "Mapping Packs",
     trace: "Trace / Verify",
+    normalized: "Normalized OCSF Logs",
   };
   const pageSub: Record<View, string> = {
     dashboard: "System health and analyst workload overview",
     queue: "Clusters awaiting analyst review \u2014 sorted by volume",
-    cluster: "Field-by-field mapping review and confirmation",
+    cluster: "Field-by-field candidate mapping review and confirmation",
     packs: "Mapping pack registry \u2014 all statuses",
     trace: "Forward trace and Merkle anchor verification by lineage_id",
+    normalized: "Live stream of hot-path parsed and OCSF 4001 normalized security events",
   };
 
   return (
@@ -1540,7 +1888,10 @@ export default function Home() {
         </div>
 
         <div className="nav-section">
-          <div className="nav-label">Audit</div>
+          <div className="nav-label">Audit & Streams</div>
+          <button id="nav-normalized" className={`nav-item ${view === "normalized" ? "active" : ""}`} onClick={() => nav("normalized")}>
+            <span className="nav-icon">{"\u26A1"}</span> Normalized Logs
+          </button>
           <button id="nav-trace" className={`nav-item ${view === "trace" ? "active" : ""}`} onClick={() => nav("trace")}>
             <span className="nav-icon">{"\uD83D\uDD0D"}</span> Trace / Verify
           </button>
@@ -1586,6 +1937,7 @@ export default function Home() {
             <ClusterDetail clusterId={selectedCluster} onBack={() => nav("queue")} actor={actor} onTrace={handleTrace} />
           )}
           {view === "packs" && <PacksView />}
+          {view === "normalized" && <NormalizedView onTrace={handleTrace} />}
           {view === "trace" && <TraceView initialLineageId={activeTraceId} />}
         </div>
       </main>

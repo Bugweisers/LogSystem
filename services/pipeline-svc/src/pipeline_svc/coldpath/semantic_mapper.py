@@ -40,11 +40,30 @@ OCSF_VOCABULARY: dict[str, list[str]] = {
         "action taken", "firewall action", "deny", "permit", "drop", "allow",
         "block", "reject", "pass", "verdict", "rule action",
     ],
+    "http_request.http_method": [
+        "http method", "request method", "method", "verb", "get", "post", "put", "delete", "patch", "head",
+    ],
+    "http_request.url.path": [
+        "endpoint", "url path", "request uri", "path", "request path", "uri", "url", "route",
+    ],
+    "http_response.code": [
+        "status code", "http status", "response code", "status", "http status code", "response status",
+    ],
+    "traffic.bytes_out": [
+        "response size bytes", "bytes sent", "response size", "body bytes sent", "size", "bytes", "response length",
+    ],
+    "http_request.user_agent": [
+        "user agent", "http user agent", "agent", "browser", "client user agent",
+    ],
+    "time": [
+        "timestamp", "time", "date", "event time", "log time", "occurred at",
+    ],
 }
 
 RE_PORT = re.compile(r"^\d{1,5}$")
 KNOWN_PROTOCOLS = {"tcp", "udp", "icmp", "ip", "gre", "esp", "ah", "sctp"}
 KNOWN_ACTIONS = {"deny", "permit", "drop", "allow", "block", "reject", "pass", "refuse"}
+KNOWN_HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "options"}
 
 
 def check_type_compatibility(attr: str, value: str) -> float:
@@ -69,6 +88,18 @@ def check_type_compatibility(attr: str, value: str) -> float:
 
     if attr == "action":
         return 1.0 if val in KNOWN_ACTIONS else 0.0
+
+    if attr == "http_request.http_method":
+        return 1.0 if val in KNOWN_HTTP_METHODS else 0.0
+
+    if attr == "http_response.code":
+        return 1.0 if val.isdigit() and 100 <= int(val) <= 599 else 0.0
+
+    if attr == "traffic.bytes_out":
+        return 1.0 if val.isdigit() and int(val) >= 0 else 0.0
+
+    if attr == "http_request.url.path":
+        return 1.0 if val.startswith("/") else 0.0
 
     return 0.5
 

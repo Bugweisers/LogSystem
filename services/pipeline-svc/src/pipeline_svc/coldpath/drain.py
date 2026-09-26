@@ -116,13 +116,16 @@ class DrainParser:
         depth: int = 4,
         sim_threshold: float = 0.5,
         max_cluster_capacity: int = 500,
+        initial_sequence: int = 1,
+        cluster_prefix: str = "drain-cluster-",
     ) -> None:
         self.depth = depth
         self.sim_threshold = sim_threshold
         self.max_cluster_capacity = max_cluster_capacity
         self.root = DrainNode()
         self.clusters: list[LogCluster] = []
-        self._cluster_sequence = 1
+        self._cluster_sequence = initial_sequence
+        self.cluster_prefix = cluster_prefix
 
     def tokenize(self, log_line: str) -> list[str]:
         return log_line.strip().split()
@@ -212,7 +215,7 @@ class DrainParser:
         return new_cluster, True
 
     def _create_new_cluster(self, tokens: list[str], sample_log: str) -> LogCluster:
-        cid = f"drain-cluster-{self._cluster_sequence:04d}"
+        cid = f"{self.cluster_prefix}{self._cluster_sequence:04d}"
         self._cluster_sequence += 1
 
         # Replace obvious variables with wildcard

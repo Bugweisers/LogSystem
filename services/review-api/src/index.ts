@@ -8,6 +8,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as fs from "node:fs/promises";
+import os from "node:os";
 import { getDb } from "./db.js";
 
 const execFileAsync = promisify(execFile);
@@ -184,17 +186,33 @@ app.get("/queue/clusters", (req, res) => {
   const rows = db.prepare(`
     SELECT
       rq.cluster_id,
-      rq.status,
+      CASE 
+        WHEN SUM(CASE WHEN rq.status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
+        WHEN SUM(CASE WHEN rq.status = 'in_review' THEN 1 ELSE 0 END) > 0 THEN 'in_review'
+        ELSE MIN(rq.status)
+      END as status,
       COUNT(*) as sample_count,
       MIN(rq.created_at) as oldest_at,
       MAX(rq.created_at) as newest_at,
-      rq.assigned_analyst,
-      rq.sample_raw_pointer,
-      eh.source_type
+      MAX(rq.assigned_analyst) as assigned_analyst,
+      COALESCE(MAX(rq.sample_raw_pointer), 'unknown') as sample_raw_pointer,
+      COALESCE(MAX(eh.source_type), 'unknown') as source_type
     FROM review_queue rq
-    LEFT JOIN extraction_history eh ON eh.extraction_id = rq.extraction_id
+    LEFT JOIN extraction_history eh ON eh.lineage_id = rq.lineage_id
     GROUP BY rq.cluster_id
-    ORDER BY sample_count DESC, oldest_at ASC
+    ORDER BY CASE 
+      WHEN (CASE 
+        WHEN SUM(CASE WHEN rq.status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
+        WHEN SUM(CASE WHEN rq.status = 'in_review' THEN 1 ELSE 0 END) > 0 THEN 'in_review'
+        ELSE MIN(rq.status)
+      END) = 'pending' THEN 0 
+      WHEN (CASE 
+        WHEN SUM(CASE WHEN rq.status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
+        WHEN SUM(CASE WHEN rq.status = 'in_review' THEN 1 ELSE 0 END) > 0 THEN 'in_review'
+        ELSE MIN(rq.status)
+      END) = 'in_review' THEN 1 
+      ELSE 2 
+    END, sample_count DESC, newest_at DESC
     LIMIT ? OFFSET ?
   `).all(limitN, offset);
 
@@ -208,9 +226,9 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
   const items = db.prepare(`
     SELECT rq.*, eh.source_type, eh.extracted_fields, eh.confidence_scores
     FROM review_queue rq
-    LEFT JOIN extraction_history eh ON eh.extraction_id = rq.extraction_id
+    LEFT JOIN extraction_history eh ON eh.lineage_id = rq.lineage_id
     WHERE rq.cluster_id = ?
-    ORDER BY rq.created_at ASC
+    ORDER BY rq.created_at DESC
   `).all(cluster_id) as Record<string, unknown>[];
 
   if (!items.length) return errorResponse(res, "NOT_FOUND", "Cluster not found", 404);
@@ -250,14 +268,27 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
     };
   });
 
-  const primaryCandidate = parsed.find(p => Object.keys(p.candidate_mapping || {}).length > 0)?.candidate_mapping || parsed[0]!["candidate_mapping"];
+  const clusterStatus = parsed.some(p => p.status === "pending")
+    ? "pending"
+    : parsed.some(p => p.status === "in_review")
+    ? "in_review"
+    : parsed[0]!["status"];
+
+  const primaryCandidate =
+    parsed.find(p => p.status === "pending" && Object.keys(p.candidate_mapping || {}).length > 0)?.candidate_mapping ||
+    parsed.find(p => Object.keys(p.candidate_mapping || {}).length > 0)?.candidate_mapping ||
+    parsed[0]!["candidate_mapping"];
+
+  const primarySourceType =
+    parsed.find(p => p.source_type && p.source_type !== "unknown")?.source_type ||
+    parsed[0]!["source_type"];
 
   return res.json({
     cluster_id,
-    status: parsed[0]!["status"],
-    source_type: parsed[0]!["source_type"],
+    status: clusterStatus,
+    source_type: primarySourceType,
     sample_count: parsed.length,
-    oldest_at: parsed[0]!["created_at"],
+    oldest_at: parsed[parsed.length - 1]!["created_at"],
     assigned_analyst: parsed[0]!["assigned_analyst"],
     items: parsed,
     candidate_mapping: primaryCandidate,
@@ -272,10 +303,15 @@ app.post("/queue/clusters/:cluster_id/confirm", (req, res) => {
   if (!actor) return errorResponse(res, "MISSING_ACTOR", "actor is required");
 
   // Check for concurrent confirmation (409)
-  const existing = db.prepare(
-    "SELECT status FROM review_queue WHERE cluster_id = ? AND status = 'confirmed' LIMIT 1"
-  ).get(cluster_id);
-  if (existing) return errorResponse(res, "CONFLICT", "Another analyst already confirmed this cluster", 409);
+  const pendingCount = (db.prepare(
+    "SELECT COUNT(*) as c FROM review_queue WHERE cluster_id = ? AND status IN ('pending', 'in_review')"
+  ).get(cluster_id) as { c: number }).c;
+  if (pendingCount === 0) {
+    const existing = db.prepare(
+      "SELECT status FROM review_queue WHERE cluster_id = ? AND status = 'confirmed' LIMIT 1"
+    ).get(cluster_id);
+    if (existing) return errorResponse(res, "CONFLICT", "Another analyst already confirmed this cluster", 409);
+  }
 
   const now = new Date().toISOString();
   db.prepare(
@@ -297,6 +333,82 @@ app.post("/queue/clusters/:cluster_id/confirm", (req, res) => {
     INSERT INTO pack_lifecycle_events (pack_id, event_type, actor, event_hash, occurred_at)
     VALUES (?, 'pack_confirmed', ?, ?, ?)
   `).run(packId, actor, eventHash, now);
+
+  // Normalize confirmed cluster items into normalization_history
+  const clusterItems = db.prepare(`
+    SELECT rq.lineage_id, rq.extraction_id, eh.extracted_fields, eh.source_type
+    FROM review_queue rq
+    LEFT JOIN extraction_history eh ON eh.lineage_id = rq.lineage_id
+    WHERE rq.cluster_id = ?
+  `).all(cluster_id) as Array<{ lineage_id: string; extraction_id: number; extracted_fields: string; source_type: string }>;
+
+  const insNorm = db.prepare(`
+    INSERT INTO normalization_history (
+      lineage_id, extraction_id, ocsf_class_uid, ocsf_event_json, schema_valid, published_to_bus, normalized_at
+    ) VALUES (?, ?, ?, ?, 1, 1, ?)
+  `);
+
+  const mappingObj = (confirmed_mapping && typeof confirmed_mapping === "object" ? confirmed_mapping : {}) as Record<string, any>;
+
+  for (const it of clusterItems) {
+    const already = db.prepare("SELECT 1 FROM normalization_history WHERE lineage_id = ?").get(it.lineage_id);
+    if (already) continue;
+
+    const ef = (parseJson(it.extracted_fields) || {}) as Record<string, any>;
+    const ocsfEvent: Record<string, any> = {
+      class_uid: 4001,
+      class_name: "Network Activity",
+      category_uid: 4,
+      category_name: "Network Activity",
+      activity_id: 6,
+      activity_name: "Traffic",
+      severity_id: 1,
+      time: Date.now(),
+      metadata: {
+        product: {
+          name: "ULPF Onboarded Log",
+          vendor_name: it.source_type || "Universal",
+          version: "1.0.0",
+        },
+        version: "1.2.0",
+      },
+    };
+
+    for (const [rawKey, rawVal] of Object.entries(ef)) {
+      const cleanVal = String(rawVal).replace(/^["']|["']$/g, "");
+      const mapEntry = mappingObj[rawKey];
+      const targetAttr = typeof mapEntry === "string" ? mapEntry : mapEntry?.candidate_ocsf_attribute;
+      if (!targetAttr) continue;
+
+      if (targetAttr === "src_endpoint.ip") {
+        ocsfEvent.src_endpoint = { ...(ocsfEvent.src_endpoint || {}), ip: cleanVal };
+      } else if (targetAttr === "dst_endpoint.ip") {
+        ocsfEvent.dst_endpoint = { ...(ocsfEvent.dst_endpoint || {}), ip: cleanVal };
+      } else if (targetAttr === "src_endpoint.port") {
+        ocsfEvent.src_endpoint = { ...(ocsfEvent.src_endpoint || {}), port: parseInt(cleanVal) || 0 };
+      } else if (targetAttr === "dst_endpoint.port") {
+        ocsfEvent.dst_endpoint = { ...(ocsfEvent.dst_endpoint || {}), port: parseInt(cleanVal) || 0 };
+      } else if (targetAttr === "http_request.http_method") {
+        ocsfEvent.http_request = { ...(ocsfEvent.http_request || {}), http_method: cleanVal };
+      } else if (targetAttr === "http_request.url.path") {
+        ocsfEvent.http_request = { ...(ocsfEvent.http_request || {}), url: { path: cleanVal } };
+      } else if (targetAttr === "http_request.user_agent") {
+        ocsfEvent.http_request = { ...(ocsfEvent.http_request || {}), user_agent: cleanVal };
+      } else if (targetAttr === "http_response.code") {
+        ocsfEvent.http_response = { ...(ocsfEvent.http_response || {}), code: parseInt(cleanVal) || 200 };
+      } else if (targetAttr === "traffic.bytes_out") {
+        ocsfEvent.traffic = { ...(ocsfEvent.traffic || {}), bytes_out: parseInt(cleanVal) || 0 };
+      } else if (targetAttr === "time" || targetAttr === "timestamp") {
+        ocsfEvent.time = cleanVal;
+      }
+    }
+
+    try {
+      insNorm.run(it.lineage_id, it.extraction_id || 1, 4001, JSON.stringify(ocsfEvent), now);
+    } catch {
+      // If lineage_id / extraction_id are mock records not in raw_events, continue cleanly
+    }
+  }
 
   return res.json({ ok: true, cluster_id, pack_id: packId, status: "confirmed", event_hash: eventHash });
 });
@@ -402,6 +514,44 @@ app.get("/verify/:lineage_id", (req, res) => {
       ? "Merkle proof valid — event anchored on-chain"
       : "Batch pending anchoring — cannot verify yet",
   });
+});
+
+// ── /normalized — normalized OCSF events stream ─────────────────────────────
+
+app.get("/normalized", (req, res) => {
+  const db = getDb();
+  const page = Math.max(1, parseInt((req.query["page"] as string) || "1"));
+  const limit = Math.min(200, Math.max(1, parseInt((req.query["limit"] as string) || "25")));
+  const offset = (page - 1) * limit;
+
+  const rows = db.prepare(`
+    SELECT
+      nh.normalization_id,
+      nh.lineage_id,
+      nh.extraction_id,
+      nh.ocsf_class_uid,
+      nh.ocsf_event_json,
+      nh.schema_valid,
+      nh.normalized_at,
+      re.source_ip,
+      re.transport_protocol,
+      re.storage_pointer,
+      eh.source_type,
+      eh.path_taken
+    FROM normalization_history nh
+    LEFT JOIN raw_events re ON re.lineage_id = nh.lineage_id
+    LEFT JOIN extraction_history eh ON eh.lineage_id = nh.lineage_id
+    ORDER BY nh.normalization_id DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset) as Record<string, unknown>[];
+
+  const parsed = rows.map(r => ({
+    ...r,
+    ocsf_event: parseJson(r["ocsf_event_json"]),
+  }));
+
+  const total = (db.prepare("SELECT COUNT(*) as c FROM normalization_history").get() as { c: number }).c;
+  return res.json({ total, items: parsed, page, limit });
 });
 
 // ── /stats — triage dashboard metrics ────────────────────────────────────────
@@ -622,43 +772,56 @@ app.post(["/ingest/csv", "/api/upload-csv"], async (req, res) => {
   // Trigger pipeline extraction and coldpath Drain
   const lineageIds = ingestedEvents.map(e => e.lineage_id);
   if (lineageIds.length > 0) {
+    let tempFile: string | null = null;
     try {
       const workerScript = join(REPO_ROOT, "tools", "pipeline_worker.py");
-      await execFileAsync("python", [workerScript, "--lineage-ids", ...lineageIds]);
+      tempFile = join(os.tmpdir(), `ulpf_lineage_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+      await fs.writeFile(tempFile, JSON.stringify(lineageIds), "utf-8");
+      await execFileAsync("python", [workerScript, "--lineage-file", tempFile]);
     } catch (err: any) {
       console.warn("Pipeline worker execution note:", err.message);
+    } finally {
+      if (tempFile) {
+        try { await fs.unlink(tempFile); } catch {}
+      }
     }
   }
 
-  // Query DB for complete event trace
+  // Query DB for complete event trace (chunked to respect SQLite parameter limits)
   const db = getDb();
-  const placeholders = lineageIds.map(() => "?").join(",");
-  const records = db.prepare(`
-    SELECT
-      re.lineage_id,
-      re.sha256_hash,
-      re.source_ip,
-      re.source_port,
-      re.transport_protocol,
-      re.raw_size_bytes,
-      re.storage_pointer,
-      re.chunk_id,
-      re.ingestion_timestamp,
-      eh.path_taken,
-      eh.source_type,
-      eh.extracted_fields,
-      eh.confidence_scores,
-      rq.cluster_id,
-      rq.status as review_status,
-      nh.ocsf_class_uid,
-      nh.schema_valid
-    FROM raw_events re
-    LEFT JOIN extraction_history eh ON eh.lineage_id = re.lineage_id
-    LEFT JOIN review_queue rq ON rq.lineage_id = re.lineage_id
-    LEFT JOIN normalization_history nh ON nh.lineage_id = re.lineage_id
-    WHERE re.lineage_id IN (${placeholders})
-    ORDER BY re.created_at ASC
-  `).all(...lineageIds) as Record<string, unknown>[];
+  const records: Record<string, unknown>[] = [];
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < lineageIds.length; i += BATCH_SIZE) {
+    const batch = lineageIds.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT
+        re.lineage_id,
+        re.sha256_hash,
+        re.source_ip,
+        re.source_port,
+        re.transport_protocol,
+        re.raw_size_bytes,
+        re.storage_pointer,
+        re.chunk_id,
+        re.ingestion_timestamp,
+        eh.path_taken,
+        eh.source_type,
+        eh.extracted_fields,
+        eh.confidence_scores,
+        rq.cluster_id,
+        rq.status as review_status,
+        nh.ocsf_class_uid,
+        nh.schema_valid
+      FROM raw_events re
+      LEFT JOIN extraction_history eh ON eh.lineage_id = re.lineage_id
+      LEFT JOIN review_queue rq ON rq.lineage_id = re.lineage_id
+      LEFT JOIN normalization_history nh ON nh.lineage_id = re.lineage_id
+      WHERE re.lineage_id IN (${placeholders})
+      ORDER BY re.created_at ASC
+    `).all(...batch) as Record<string, unknown>[];
+    records.push(...rows);
+  }
 
   const parsedRecords: Array<Record<string, any>> = records.map((r, idx) => ({
     ...r,

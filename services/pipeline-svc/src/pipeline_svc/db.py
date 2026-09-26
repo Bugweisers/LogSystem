@@ -7,14 +7,18 @@ from ulpf_contracts import ExtractionEnvelope
 
 
 class SqlitePipelineRepository:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, conn: sqlite3.Connection | None = None) -> None:
         self.db_path = db_path
+        self._shared_conn = conn
         self._ensure_schema()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self._shared_conn is not None:
+            return self._shared_conn
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 

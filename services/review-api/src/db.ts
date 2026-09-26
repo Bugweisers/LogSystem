@@ -77,6 +77,11 @@ function ensureSchema(db: Database.Database): void {
       fixture_id INTEGER PRIMARY KEY AUTOINCREMENT, pack_id TEXT NOT NULL REFERENCES mapping_packs(pack_id),
       sample_raw_pointer TEXT NOT NULL, expected_ocsf_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_eh_lineage ON extraction_history(lineage_id);
+    CREATE INDEX IF NOT EXISTS idx_rq_lineage ON review_queue(lineage_id);
+    CREATE INDEX IF NOT EXISTS idx_rq_ext_id ON review_queue(extraction_id);
+    CREATE INDEX IF NOT EXISTS idx_nh_lineage ON normalization_history(lineage_id);
+    CREATE INDEX IF NOT EXISTS idx_nh_ext_id ON normalization_history(extraction_id);
   `);
 }
 

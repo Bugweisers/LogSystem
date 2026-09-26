@@ -24,9 +24,11 @@ class ConfidenceGate:
         self,
         threshold: float = 0.85,
         db_path: str = "ulpf.db",
+        conn: sqlite3.Connection | None = None,
     ) -> None:
         self.threshold = threshold
         self.db_path = db_path
+        self._shared_conn = conn
 
     def evaluate_and_route(
         self,
@@ -103,8 +105,8 @@ class ConfidenceGate:
         """Records the pending review item into SQLite review_queue table."""
         now = datetime.now(UTC).isoformat()
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
+            if self._shared_conn is not None:
+                self._shared_conn.execute(
                     """
                     INSERT INTO review_queue (
                         lineage_id, extraction_id, candidate_mapping, cluster_id,
@@ -119,7 +121,24 @@ class ConfidenceGate:
                         now,
                     ),
                 )
-                conn.commit()
+            else:
+                with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO review_queue (
+                            lineage_id, extraction_id, candidate_mapping, cluster_id,
+                            status, created_at
+                        ) VALUES (?, ?, ?, ?, 'pending', ?)
+                        """,
+                        (
+                            lineage_id,
+                            extraction_id,
+                            json.dumps(candidate_mapping),
+                            cluster_id,
+                            now,
+                        ),
+                    )
+                    conn.commit()
         except sqlite3.OperationalError:
             # If table doesn't exist yet in test runner, ignore or log
             pass

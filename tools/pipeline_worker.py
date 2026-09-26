@@ -26,7 +26,11 @@ from pipeline_svc.pack_registry import PackRegistry
 from pipeline_svc.router import Router
 
 
-def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db") -> dict[str, Any]:
+def process_events(
+    lineage_ids: list[str] | None = None,
+    db_path: str = "ulpf.db",
+    lineage_file: str | None = None,
+) -> dict[str, Any]:
     db_file = REPO_ROOT / db_path
     pub_key_path = REPO_ROOT / "keys" / "dev_signing.pub"
     pub_key = pub_key_path.read_bytes() if pub_key_path.exists() else b""
@@ -34,9 +38,26 @@ def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db
     registry = PackRegistry(public_key_pem=pub_key)
     registry.reconcile_sweep(REPO_ROOT / "packs")
 
-    drain_parser = DrainParser()
+    conn = sqlite3.connect(str(db_file), timeout=30.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
+
+    # Find highest existing drain-cluster sequence to avoid colliding with seed clusters
+    existing_cids = [r[0] for r in conn.execute("SELECT DISTINCT cluster_id FROM review_queue").fetchall() if r[0]]
+    max_seq = 10
+    for cid in existing_cids:
+        if cid.startswith("drain-cluster-"):
+            try:
+                seq = int(cid.split("-")[-1])
+                max_seq = max(max_seq, seq)
+            except ValueError:
+                pass
+    next_seq = max_seq + 1
+
+    drain_parser = DrainParser(initial_sequence=next_seq)
     semantic_mapper = SemanticMapper()
-    confidence_gate = ConfidenceGate(db_path=str(db_file), threshold=0.85)
+    confidence_gate = ConfidenceGate(db_path=str(db_file), threshold=0.85, conn=conn)
 
     router = Router(
         registry=registry,
@@ -45,7 +66,7 @@ def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db
         confidence_gate=confidence_gate,
     )
 
-    repo = SqlitePipelineRepository(str(db_file))
+    repo = SqlitePipelineRepository(str(db_file), conn=conn)
 
     class LocalBus:
         def __init__(self) -> None:
@@ -56,50 +77,73 @@ def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db
 
     bus = LocalBus()
 
-    conn = sqlite3.connect(str(db_file))
-    conn.row_factory = sqlite3.Row
+    if lineage_file and Path(lineage_file).exists():
+        raw_content = Path(lineage_file).read_text(encoding="utf-8").strip()
+        try:
+            lineage_ids = json.loads(raw_content)
+        except Exception:
+            lineage_ids = [line.strip() for line in raw_content.splitlines() if line.strip()]
 
+    rows = []
     if lineage_ids:
-        placeholders = ",".join("?" for _ in lineage_ids)
-        query = f"SELECT * FROM raw_events WHERE lineage_id IN ({placeholders})"
-        rows = conn.execute(query, lineage_ids).fetchall()
+        for i in range(0, len(lineage_ids), 500):
+            batch = lineage_ids[i:i + 500]
+            placeholders = ",".join("?" for _ in batch)
+            query = f"SELECT * FROM raw_events WHERE lineage_id IN ({placeholders})"
+            rows.extend(conn.execute(query, batch).fetchall())
     else:
-        # Process any events in raw_events that do not have an extraction_history record yet
+        # Process all events in raw_events that do not have an extraction_history record yet
         query = """
             SELECT re.* FROM raw_events re
             LEFT JOIN extraction_history eh ON eh.lineage_id = re.lineage_id
             WHERE eh.extraction_id IS NULL
             ORDER BY re.created_at ASC
-            LIMIT 200
         """
         rows = conn.execute(query).fetchall()
 
     results: list[dict[str, Any]] = []
+    decomp_cache: dict[str, bytes] = {}
+    idx_cache: dict[str, dict[str, Any]] = {}
 
-    for row in rows:
+    for idx, row in enumerate(rows):
         lid = row["lineage_id"]
-        # Raw log bytes: try to read from chunk store or construct from metadata
         chunk_id = row["chunk_id"]
         storage_ptr = row["storage_pointer"]
         leaf_idx = row["merkle_leaf_index"]
 
         raw_text = ""
         offset_key = f"offset_{leaf_idx}"
-        idx_file = REPO_ROOT / "data" / "raw_store" / f"{chunk_id}.idx.json"
-        zst_file = REPO_ROOT / "data" / "raw_store" / f"{chunk_id}.zst"
-        if idx_file.exists() and zst_file.exists():
-            try:
-                import zstandard as zstd
-                idx_data = json.loads(idx_file.read_text(encoding="utf-8"))
-                entry = idx_data.get("entries", {}).get(offset_key)
-                if entry:
-                    dctx = zstd.ZstdDecompressor()
-                    decomp = dctx.decompress(zst_file.read_bytes())
-                    off = int(entry["offset"])
-                    length = int(entry["length"])
-                    raw_text = decomp[off:off + length].decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001, S110
-                pass
+
+        if chunk_id:
+            if chunk_id not in idx_cache:
+                idx_file = REPO_ROOT / "data" / "raw_store" / f"{chunk_id}.idx.json"
+                if idx_file.exists():
+                    try:
+                        idx_cache[chunk_id] = json.loads(idx_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        idx_cache[chunk_id] = {}
+                else:
+                    idx_cache[chunk_id] = {}
+
+            if chunk_id not in decomp_cache:
+                zst_file = REPO_ROOT / "data" / "raw_store" / f"{chunk_id}.zst"
+                if zst_file.exists():
+                    try:
+                        import zstandard as zstd
+                        dctx = zstd.ZstdDecompressor()
+                        decomp_cache[chunk_id] = dctx.decompress(zst_file.read_bytes())
+                    except Exception:
+                        decomp_cache[chunk_id] = b""
+                else:
+                    decomp_cache[chunk_id] = b""
+
+            idx_data = idx_cache.get(chunk_id, {})
+            entry = idx_data.get("entries", {}).get(offset_key)
+            decomp = decomp_cache.get(chunk_id, b"")
+            if entry and decomp:
+                off = int(entry["offset"])
+                length = int(entry["length"])
+                raw_text = decomp[off:off + length].decode("utf-8", errors="replace")
 
         # Fallback raw text if chunk wasn't readable
         if not raw_text:
@@ -137,6 +181,10 @@ def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db
                     })
             else:
                 # Cold path: Drain cluster or review queue
+                conn.execute(
+                    "UPDATE review_queue SET extraction_id = ?, sample_raw_pointer = ? WHERE lineage_id = ?",
+                    (ext_id, storage_ptr, lid),
+                )
                 results.append({
                     "lineage_id": lid,
                     "path_taken": "COLD",
@@ -157,10 +205,15 @@ def process_events(lineage_ids: list[str] | None = None, db_path: str = "ulpf.db
 def main() -> None:
     parser = argparse.ArgumentParser(description="ULPF Pipeline Worker")
     parser.add_argument("--lineage-ids", nargs="*", help="List of lineage IDs to process")
+    parser.add_argument("--lineage-file", help="Path to JSON file containing lineage IDs to process")
     parser.add_argument("--db-path", default="ulpf.db", help="Path to ulpf.db")
     args = parser.parse_args()
 
-    res = process_events(args.lineage_ids, args.db_path)
+    res = process_events(
+        lineage_ids=args.lineage_ids,
+        db_path=args.db_path,
+        lineage_file=args.lineage_file,
+    )
     print(json.dumps(res))
 
 
