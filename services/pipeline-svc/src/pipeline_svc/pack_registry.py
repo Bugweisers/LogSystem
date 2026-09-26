@@ -124,6 +124,11 @@ class PackRegistry:
                 continue
 
             pack_id = data.get("pack_id", yf.name)
+            if not data.get("signature"):
+                sig_candidate = yf.with_suffix(yf.suffix + ".sig")
+                if sig_candidate.is_file():
+                    data["signature"] = sig_candidate.read_text(encoding="utf-8").strip()
+
             if not verify_pack_signature(data, self._public_key_pem):
                 self._quarantined[pack_id] = "Invalid or missing Ed25519 cryptographic signature"
                 results[pack_id] = False

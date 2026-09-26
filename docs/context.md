@@ -4,10 +4,10 @@
 
 > **Rule: nothing goes in this file unless it has been actually built and its acceptance criteria (from `phases.md`) have actually passed.** A planned feature, an in-progress feature, or an assumption is NOT a status update — see `agent.md` Section "Anti-Hallucination Rules" for the exact discipline.
 
-## Current Phase: **M4 — Normalization to OCSF 4001**
+## Current Phase: **M6 — Cold Path, Review, & Auto-Onboarding Loop**
 
 **Phase start date:** 2026-09-26
-**Phase status:** Complete (Advancing to M5)
+**Phase status:** Complete (Advancing to M7 — Docker Compose, Hardening, Air-Gap, & E2E)
 
 ## What Exists Right Now
 
@@ -57,6 +57,23 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 - **Persistence & Bus Publish:** Append-only writes to SQLite `normalization_history` and publication to `ulpf.ocsf.events.v1`.
 - **Shipped Signed Packs:** Dev-signed `packs/base/base_network.yaml` and vendor pack `packs/vendors/cisco_asa_v1.3.0.yaml`.
 
+### `sinks-svc` (M5 Complete)
+- **Local Message Bus:** Topic `ulpf.ocsf.events.v1` with independent consumer-group offsets (`siem-streaming`, `lake-batch`), per-group overflow disk spooling, and non-blocking decoupled delivery.
+- **SIEM Stand-in Sink:** Dual-output JSONL (`data/sinks/siem/events.jsonl`) and Syslog/CEF (`data/sinks/siem/events.cef`) with full RFC/CEF header escaping and extension field serialization.
+- **Parquet Data Lake Writer (`pyarrow`):** Strongly-typed PyArrow schema for OCSF 4001, date-partitioned layout (`year=YYYY/month=MM/day=DD/`), and dedicated `_confidence` struct column containing per-field float scores.
+- **Zero-Preprocessing Parquet Access:** `pandas.read_parquet()` reads generated Parquet files directly with zero preprocessing, preserving nested endpoints and confidence structures.
+- **Resilience & Backpressure Isolation:** Killing/blocking the SIEM sink causes zero measurable impact on ingestion or the data lake writer; SIEM sink catches up in order once unblocked.
+
+### `pipeline-svc/coldpath` (M6 Complete)
+- **Drain Template Miner:** Fixed-depth parse tree clustering by length and first token with dynamic `<*>` wildcard extraction.
+- **Seeded Warm-Start:** Transfer-learning token overlap seeding from existing active packs accelerating convergence on known vendors.
+- **Lexical Semantic Mapper:** TF-IDF n-gram vector matching against OCSF 4001 vocabularies with type-compatibility verification (IP parsing, port ranges).
+- **Confidence Gate:** Threshold gating (default 0.85) routing low-confidence fields to SQLite `review_queue` while allowing confident fields through.
+- **Draft Pack Generator:** Automatically synthesizes standard YAML mapping packs and automated test fixture records from clusters and confirmed mappings.
+- **Auto-Onboarding Lifecycle Loop:** Analyst confirmation triggers Ed25519 pack signing, lifecycle record persistence in SQLite, and atomic RCU snapshot hot-reload into `PackRegistry`. The next log of that format immediately takes the HOT path with 1.0 confidence.
+- **Concurrency Conflict Detection:** Prevents simultaneous confirmation collisions, returning HTTP 409 conflict.
+- **Cluster Capacity Capping:** Sets `capacity_capped=True` and flags clusters rather than mis-merging diverging formats.
+
 ### Review UI & Review API (M8 partial / developer preview)
 - `review-api` (Port 4000): 16 REST endpoints with SQLite seed data and forward trace/verify stubs.
 - `review-ui` (Port 3000): Dark-mode dashboard SPA with 5 views (Dashboard, Queue, Detail, Packs, Trace), 100% air-gap compliant (system fonts).
@@ -66,16 +83,17 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 |---|---|---|
 | `ingestion-svc` | Node/TS | M1 complete: listeners, envelope generator, raw store (zstd), batcher, durable spool, 8/8 tests pass |
 | `integrity-svc` | Node/TS | M2 complete: Merkle builder, signed ledger, anchor service, deep verify, tamper drill, 7/7 tests pass |
-| `pipeline-svc` | Python | M3 & M4 complete: pack compiler, RCU registry, hot-path router, OCSF 4001 normalizer, SQLite repos, 16/16 tests pass |
+| `pipeline-svc` | Python | M3, M4, M6 complete: pack compiler, RCU registry, hot-path router, OCSF 4001 normalizer, cold-path Drain miner, semantic mapper, confidence gate, draft generator, auto-onboarding loop, 22/22 tests pass |
+| `sinks-svc` | Python | M5 complete: LocalMessageBus, SIEM JSONL/CEF sink, Parquet data lake writer, 7/7 tests pass |
 | `review-api` | Node/TS | 16 REST endpoints live on port 4000, 1/1 tests pass |
 | `review-ui` | Next.js | SPA running on port 3000 (air-gap safe) |
-| `sinks-svc` | Python | Empty module |
 
 ### CI / lint / test
-- **Python:** `pytest` runs 32 tests (all pass: 16 contracts + 16 pipeline-svc).
+- **Python:** `pytest` runs 45 tests (16 contracts + 22 pipeline-svc + 7 sinks-svc).
 - **TypeScript:** 38 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests + 1 review-api test).
-- **Total tests: 70/70 passing across repository.**
+- **Total tests: 83/83 passing across repository.**
 - **Lint & Types:** `ruff check` 0 errors, `mypy` 0 errors across all Python packages, `tsc --noEmit` clean 0 errors across all TS packages.
+- **Live Verification (`tools/verify_live.py`):** Stages M1-M6 verified against live daemons and filesystem.
 
 ## Update Log
 
@@ -83,6 +101,7 @@ _(Newest entry at the top.)_
 
 | Date | Phase | What shipped | Verified by | New deviations logged? |
 |---|---|---|---|---|
+| 2026-09-26 | M6 | Full `pipeline-svc/coldpath` M6 implementation: Drain log clustering, transfer-learning token seeding, TF-IDF lexical semantic mapper + type verification, confidence gate (0.85) + SQLite `review_queue` routing, draft pack generator, auto-onboarding loop (Ed25519 signing, lifecycle records, RCU hot-reload swap, subsequent HOT path routing @ 1.0 confidence), HTTP 409 concurrency conflict check, cluster capacity capping | `pytest` 6/6 coldpath tests pass (45/45 Python suite, 83/83 full monorepo), `tools/verify_live.py` M1-M6 live pass, `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M4 | Full `pipeline-svc` M4 implementation: Layer 1 crosswalk, Layer 2 canonicalizers (IPv4 zero-stripping, IPv6 dual-form equivalence, port bounds [0, 65535], timestamp formats to epoch ms, enum fallback to 99), Layer 3 OCSF 4001 assembly & validation, invariant `metadata.uid == _lineage_id`, invalid timestamp schema_valid=false isolation, SQLite `normalization_history` append-only repo, `ulpf.ocsf.events.v1` bus publisher | `pytest` 6/6 normalization tests pass (32/32 Python suite, 70/70 full monorepo), `ruff check` clean, `mypy` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M3 | Full `pipeline-svc` M3 implementation: pack YAML compiler, inheritance resolution & cycle rejection, Ed25519 pack sign/verify & quarantine, RCU atomic snapshot swap with rollback, directory reconciliation sweep, hot-path regex router producing `ExtractionEnvelope` at confidence 1.0, SQLite `extraction_history` repo, dev-signed `base_network` and `cisco_asa_v1.3.0` packs | `pytest` 10/10 pipeline-svc tests pass (26/26 full suite), `ruff check` clean, `mypy` strict clean, 0 drops during hot-reload under load | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M2 | Full `integrity-svc` implementation: deterministic Merkle tree builder (spec padding rule, domain separation, sibling proofs), hash-chained signed JSONL ledger with Ed25519 signing, anchor service with SQLite `merkle_chunks` updates and `raw_events` backfill, deep verification from disk zstd bytes, tamper drill tooling | `vitest run` 7/7 tests pass (deterministic root regardless of arrival order, clean chunk verify, tamper drill failure & altered leaf isolation, negative control, edited ledger line detection), `tsc --noEmit` clean | No — adheres to architecture.md §3, §4, §5 |

@@ -1,20 +1,42 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from ulpf_contracts import ExtractionEnvelope
 from ulpf_contracts.generated.extraction_envelope_schema import PathTaken
 
-from .pack_registry import PackRegistry
+if TYPE_CHECKING:
+    from .coldpath.confidence_gate import ConfidenceGate
+    from .coldpath.drain import DrainParser
+    from .coldpath.semantic_mapper import SemanticMapper
+    from .pack_registry import PackRegistry
 
 
 class Router:
-    def __init__(self, registry: PackRegistry) -> None:
+    def __init__(
+        self,
+        registry: PackRegistry,
+        drain_parser: DrainParser | None = None,
+        semantic_mapper: SemanticMapper | None = None,
+        confidence_gate: ConfidenceGate | None = None,
+    ) -> None:
         self.registry = registry
+        self.drain_parser = drain_parser
+        self.semantic_mapper = semantic_mapper
+        self.confidence_gate = confidence_gate
 
-    def route_and_extract(self, raw_payload: str | bytes, lineage_id: str | UUID) -> ExtractionEnvelope | None:
+    def route_and_extract(
+        self,
+        raw_payload: str | bytes,
+        lineage_id: str | UUID,
+        enable_cold_path: bool = True,
+    ) -> ExtractionEnvelope | None:
         text = raw_payload.decode("utf-8", errors="replace") if isinstance(raw_payload, bytes) else raw_payload
 
         snapshot = self.registry.snapshot
 
+        # 1. Hot Path: Deterministic Regex Evaluation
         for sig in snapshot.signatures:
             m = sig.regex.search(text)
             if m:
@@ -47,4 +69,18 @@ class Router:
                     confidence_scores=confidence_scores,
                 )
 
+        # 2. Cold Path: Drain Clustering + Semantic Mapping + Confidence Gate
+        if enable_cold_path and self.drain_parser and self.semantic_mapper and self.confidence_gate:
+            cluster, _ = self.drain_parser.parse(text)
+            variables = self.drain_parser.extract_variables(cluster, text)
+            mapped = self.semantic_mapper.map_extracted_fields(variables)
+            envelope, _ = self.confidence_gate.evaluate_and_route(
+                lineage_id=lineage_id,
+                source_type="cold_path_unmapped",
+                cluster_id=cluster.cluster_id,
+                mapped_fields=mapped,
+            )
+            return envelope
+
         return None
+

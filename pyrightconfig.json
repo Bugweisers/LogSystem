@@ -1,11 +1,13 @@
 {
   "include": [
     "services/pipeline-svc",
+    "services/sinks-svc",
     "packages/contracts/python",
     "tools"
   ],
   "extraPaths": [
     "services/pipeline-svc/src",
+    "services/sinks-svc/src",
     "packages/contracts/python"
   ]
 }

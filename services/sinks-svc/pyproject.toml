@@ -9,7 +9,7 @@ description = "ULPF C8 — SIEM adapter + Parquet writer"
 requires-python = ">=3.11"
 dependencies = [
     "ulpf-contracts",
-    "pyarrow>=16,<18",
+    "pyarrow>=16",
 ]
 
 [project.optional-dependencies]
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["sinks_svc"]
+packages = ["src/sinks_svc"]
 
 [tool.ruff]
 target-version = "py311"

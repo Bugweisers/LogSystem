@@ -43,3 +43,20 @@ def verify_pack_signature(pack_dict: dict[str, Any], public_key_pem: bytes | str
         return True
     except Exception:
         return False
+
+
+def generate_keypair() -> tuple[bytes, bytes]:
+    """Generates an ephemeral Ed25519 keypair for signing and verification."""
+    priv = Ed25519PrivateKey.generate()
+    pub = priv.public_key()
+    priv_pem = priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub_pem = pub.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return priv_pem, pub_pem
+

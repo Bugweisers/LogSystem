@@ -9,7 +9,7 @@ Do NOT hand-edit the generated/ directory — regenerate it instead:
 """
 
 from ulpf_contracts.generated.error_response_schema import ErrorResponse
-from ulpf_contracts.generated.extraction_envelope_schema import ExtractionEnvelope
+from ulpf_contracts.generated.extraction_envelope_schema import ExtractionEnvelope, PathTaken
 from ulpf_contracts.generated.merkle_leaf_v1_schema import MerkleLeafV1
 from ulpf_contracts.generated.ocsf_event_v1_schema import OcsfNetworkActivityV1
 from ulpf_contracts.generated.pack_lifecycle_v1_schema import PackLifecycleV1
@@ -22,6 +22,7 @@ __all__ = [
     "MerkleLeafV1",
     "OcsfNetworkActivityV1",
     "PackLifecycleV1",
+    "PathTaken",
     "RawIngestV1",
     "ReviewQueueV1",
 ]
