@@ -1,6 +1,24 @@
-"""pipeline-svc — C3/C5/C6: Router, normalization, pack registry.
+from .compiler import CompilationError, CyclicInheritanceError, compile_pack, parse_pack_dict
+from .crypto import compute_pack_hash, sign_pack, verify_pack_signature
+from .db import SqlitePipelineRepository
+from .models import CompiledPack, CompiledSignature, PackDefinition, SignatureDefinition
+from .pack_registry import PackRegistry, RegistrySnapshot
+from .router import Router
 
-This is the M0 scaffold — no business logic yet.
-Implementation lands in M3 (hot path, packs), M4 (normalization).
-See docs/phases.md.
-"""
+__all__ = [
+    "PackDefinition",
+    "SignatureDefinition",
+    "CompiledPack",
+    "CompiledSignature",
+    "compile_pack",
+    "parse_pack_dict",
+    "CyclicInheritanceError",
+    "CompilationError",
+    "sign_pack",
+    "verify_pack_signature",
+    "compute_pack_hash",
+    "PackRegistry",
+    "RegistrySnapshot",
+    "Router",
+    "SqlitePipelineRepository",
+]

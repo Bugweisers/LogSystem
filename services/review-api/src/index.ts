@@ -2,11 +2,11 @@
  * review-api — Express REST API (C7 backend)
  * Endpoints per architecture.md §6
  */
-import express from "express";
+import express, { type Express } from "express";
 import cors from "cors";
 import { getDb } from "./db.js";
 
-const app = express();
+export const app: Express = express();
 app.use(cors({ origin: "http://localhost:3000" }));
 app.use(express.json());
 
@@ -154,7 +154,7 @@ app.get("/queue", (req, res) => {
     ...(status ? [status] : [])
   ) as { c: number }).c;
 
-  const parsed = rows.map((r: Record<string, unknown>) => ({
+  const parsed = (rows as Record<string, unknown>[]).map(r => ({
     ...r,
     candidate_mapping: parseJson(r["candidate_mapping"]),
     confirmed_mapping: parseJson(r["confirmed_mapping"]),
@@ -198,7 +198,7 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
 
   if (!items.length) return errorResponse(res, "NOT_FOUND", "Cluster not found", 404);
 
-  const parsed = items.map(r => ({
+  const parsed: Record<string, any>[] = items.map(r => ({
     ...r,
     candidate_mapping: parseJson(r["candidate_mapping"]),
     confirmed_mapping: parseJson(r["confirmed_mapping"]),
@@ -255,8 +255,8 @@ app.post("/queue/clusters/:cluster_id/reject", (req, res) => {
 app.post("/queue/clusters/:cluster_id/assign", (req, res) => {
   const db = getDb();
   const { cluster_id } = req.params;
-  const { actor } = req.body as { actor?: string };
-  if (!actor) return errorResponse(res, "MISSING_ACTOR", "actor is required");
+  const actor = req.body?.actor || req.body?.analyst || req.body?.analyst_id;
+  if (!actor) return errorResponse(res, "MISSING_ACTOR", "actor or analyst is required");
 
   db.prepare(
     "UPDATE review_queue SET status='in_review', assigned_analyst=? WHERE cluster_id=? AND status='pending'"
@@ -346,8 +346,10 @@ app.get("/packs", (_req, res) => {
 
 // ── start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`review-api listening on http://localhost:${PORT}`);
-  // Trigger DB init + seed
-  getDb();
-});
+if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(`review-api listening on http://localhost:${PORT}`);
+    // Trigger DB init + seed
+    getDb();
+  });
+}

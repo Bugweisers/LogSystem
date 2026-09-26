@@ -2,5 +2,20 @@
   "name": "ulpf-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "ULPF monorepo root — use pnpm workspaces"
+  "description": "ULPF monorepo root — use pnpm workspaces",
+  "scripts": {
+    "dev": "pnpm --filter @ulpf/review-ui dev",
+    "dev:all": "pnpm --filter @ulpf/review-ui dev",
+    "dev:ui": "pnpm --filter @ulpf/review-ui dev",
+    "dev:api": "pnpm --filter @ulpf/review-api dev",
+    "dev:ingest": "pnpm --filter @ulpf/ingestion-svc dev",
+    "start": "pnpm --filter @ulpf/review-ui start",
+    "build": "pnpm -r --filter @ulpf/contracts-ts build",
+    "test": "pnpm -r test",
+    "test:py": "pytest",
+    "test:all": "pnpm -r test && pytest",
+    "ci": "pnpm -r test && pytest && pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && ruff check packages/ services/ && mypy services/pipeline-svc/src",
+    "lint": "pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && ruff check packages/ services/",
+    "typecheck": "pnpm -r --filter \"./packages/**\" --filter \"./services/**\" exec tsc --noEmit && mypy services/pipeline-svc/src"
+  }
 }

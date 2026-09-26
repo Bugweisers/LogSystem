@@ -4,12 +4,10 @@
 
 > **Rule: nothing goes in this file unless it has been actually built and its acceptance criteria (from `phases.md`) have actually passed.** A planned feature, an in-progress feature, or an assumption is NOT a status update — see `agent.md` Section "Anti-Hallucination Rules" for the exact discipline.
 
----
-
-## Current Phase: **M2 — Integrity: Merkle, Ledger, Verification**
+## Current Phase: **M3 — Packs, Signing, Hot Path**
 
 **Phase start date:** 2026-09-26
-**Phase status:** Complete (Advancing to M3)
+**Phase status:** Complete (Advancing to M4)
 
 ## What Exists Right Now
 
@@ -42,6 +40,14 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 - **Deep Verification:** Re-reads raw zstd chunk files directly from disk, independently recomputes content seal SHA-256 for all raw slices, reconstructs Merkle tree, and validates against ledger anchor.
 - **Tamper Drill Tooling:** Utility for deliberate byte-level raw chunk corruption, ledger line editing, or DB hash tampering. Verifies deep verify fails, isolates the altered leaf ID, and confirms untouched chunks verify (negative control).
 
+### `pipeline-svc` (M3 Complete)
+- **Pack Compiler & Inheritance:** YAML parser with multi-level inheritance resolution, child-over-parent field precedence, regex compilation, cyclic inheritance rejection (`CyclicInheritanceError`), and syntax failure isolation.
+- **Ed25519 Signing & Quarantine:** Cryptographic canonical SHA-256 pack hashing and Ed25519 signature verification against public key PEM. Any unsigned or tampered pack is quarantined immediately and never loaded into active memory.
+- **RCU Registry & Hot Reload:** Zero-restart atomic snapshot swap (`RegistrySnapshot`). Rollback restores prior version behavior exactly. Continuous stream processing through live reloads verified with zero dropped events or mixed states.
+- **Reconciliation Sweep:** Filesystem pack loader and directory sweep (`reconcile_sweep`) resolving cross-pack inheritance dependencies deterministically and flagging quarantined files.
+- **Hot-Path Regex Router:** Evaluates active signature registry, extracts named groups and mapped fields into `ExtractionEnvelope` at confidence 1.0, records execution to SQLite `extraction_history`.
+- **Shipped Signed Packs:** Dev-signed `packs/base/base_network.yaml` and vendor pack `packs/vendors/cisco_asa_v1.3.0.yaml`.
+
 ### Review UI & Review API (M8 partial / developer preview)
 - `review-api` (Port 4000): 16 REST endpoints with SQLite seed data and forward trace/verify stubs.
 - `review-ui` (Port 3000): Dark-mode dashboard SPA with 5 views (Dashboard, Queue, Detail, Packs, Trace), 100% air-gap compliant (system fonts).
@@ -51,15 +57,16 @@ Full monorepo tree created per README §4: `docs/`, `packages/contracts/`, `pack
 |---|---|---|
 | `ingestion-svc` | Node/TS | M1 complete: listeners, envelope generator, raw store (zstd), batcher, durable spool, 8/8 tests pass |
 | `integrity-svc` | Node/TS | M2 complete: Merkle builder, signed ledger, anchor service, deep verify, tamper drill, 7/7 tests pass |
-| `review-api` | Node/TS | 16 REST endpoints live on port 4000 |
+| `pipeline-svc` | Python | M3 complete: pack compiler, Ed25519 signing/quarantine, RCU snapshot swap, rollback, reconciliation sweep, hot-path regex router, SQLite extraction repo, 10/10 tests pass |
+| `review-api` | Node/TS | 16 REST endpoints live on port 4000, 1/1 tests pass |
 | `review-ui` | Next.js | SPA running on port 3000 (air-gap safe) |
-| `pipeline-svc` | Python | Empty modules: `router.py`, `normalization.py`, `pack_registry.py`, `coldpath/` |
 | `sinks-svc` | Python | Empty module |
 
 ### CI / lint / test
-- **Python:** `pytest` runs 16 tests (all pass).
-- **TypeScript:** 37 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests).
-- Total tests: **53/53 passing**.
+- **Python:** `pytest` runs 26 tests (all pass: 16 contracts + 10 pipeline-svc).
+- **TypeScript:** 38 tests pass (22 contract tests + 8 ingestion acceptance tests + 7 integrity acceptance tests + 1 review-api test).
+- **Total tests: 64/64 passing across repository.**
+- **Lint & Types:** `ruff check` 0 errors, `mypy` 0 errors across all Python packages, `tsc --noEmit` clean 0 errors across all TS packages.
 
 ## Update Log
 
@@ -67,6 +74,7 @@ _(Newest entry at the top.)_
 
 | Date | Phase | What shipped | Verified by | New deviations logged? |
 |---|---|---|---|---|
+| 2026-09-26 | M3 | Full `pipeline-svc` M3 implementation: pack YAML compiler, inheritance resolution & cycle rejection, Ed25519 pack sign/verify & quarantine, RCU atomic snapshot swap with rollback, directory reconciliation sweep, hot-path regex router producing `ExtractionEnvelope` at confidence 1.0, SQLite `extraction_history` repo, dev-signed `base_network` and `cisco_asa_v1.3.0` packs | `pytest` 10/10 pipeline-svc tests pass (26/26 full suite), `ruff check` clean, `mypy` strict clean, 0 drops during hot-reload under load | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M2 | Full `integrity-svc` implementation: deterministic Merkle tree builder (spec padding rule, domain separation, sibling proofs), hash-chained signed JSONL ledger with Ed25519 signing, anchor service with SQLite `merkle_chunks` updates and `raw_events` backfill, deep verification from disk zstd bytes, tamper drill tooling | `vitest run` 7/7 tests pass (deterministic root regardless of arrival order, clean chunk verify, tamper drill failure & altered leaf isolation, negative control, edited ledger line detection), `tsc --noEmit` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M1 | Full `ingestion-svc` implementation: UDP/TCP/HTTP listeners, envelope generator, zstd raw store with offset index, dual-trigger batcher, SQLite `raw_events` writer, disk-backed durable spool, bus topics (`ulpf.raw.ingest.v1`, `ulpf.merkle.leaf.v1`) | `vitest run` 8/8 tests pass (fidelity, uniqueness, batch triggers, durable spool outage recovery, E2E listeners), `tsc --noEmit` clean | No — adheres to architecture.md §3, §4, §5 |
 | 2026-09-26 | M0 | Full monorepo scaffold, 7 JSON Schema contracts, generated Pydantic+TS types, SQLite DB schema (8 tables), Ed25519 keygen, Makefile, 38 round-trip tests (16 Python + 22 TS), all lint/typecheck clean | `pytest` 16/16 pass, `vitest` 22/22 pass, `ruff check` 0 errors, `tsc --noEmit` 0 errors on 4 TS packages | No — all follows architecture.md |
