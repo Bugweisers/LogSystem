@@ -214,8 +214,21 @@ function NoActorBanner() {
 
 // --- RawSampleViewer - up to 5 representative samples (design.md §2.2) --------
 
-function RawSampleViewer({ items }: { items: QueueItem[] }) {
+function RawSampleViewer({ items, onTrace }: { items: QueueItem[]; onTrace?: (id: string) => void }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const samples = items.slice(0, 5);
+
+  function copy(id: string) {
+    if (!id) return;
+    try {
+      navigator.clipboard?.writeText(id);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // ignore clipboard error
+    }
+  }
+
   if (!samples.length) {
     return <div className="raw-viewer" style={{ color: "var(--text-muted)" }}>No samples available</div>;
   }
@@ -224,10 +237,45 @@ function RawSampleViewer({ items }: { items: QueueItem[] }) {
       {samples.map((item, idx) => {
         const fields = Object.entries(item.extracted_fields ?? {});
         return (
-          <div key={item.lineage_id ?? idx} style={{ marginBottom: idx < samples.length - 1 ? 10 : 0 }}>
-            <div className="sample-header">
-              <span>Sample {idx + 1}</span>
-              <span>{item.lineage_id ? item.lineage_id.slice(0, 8) + "\u2026" : ""}</span>
+          <div key={item.lineage_id ?? idx} style={{ marginBottom: idx < samples.length - 1 ? 12 : 0 }}>
+            <div className="sample-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <span style={{ fontWeight: 600 }}>Sample {idx + 1}</span>
+              {item.lineage_id && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <code
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: "var(--text-accent)",
+                      background: "var(--bg-elevated)",
+                      padding: "2px 6px",
+                      borderRadius: "var(--radius-sm)",
+                      userSelect: "all",
+                    }}
+                    title="Click or copy this full UUID (lineage_id)"
+                  >
+                    {item.lineage_id}
+                  </code>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    style={{ padding: "1px 6px", fontSize: 10 }}
+                    onClick={() => copy(item.lineage_id)}
+                    title="Copy full UUID to clipboard"
+                  >
+                    {copiedId === item.lineage_id ? "\u2713 Copied" : "Copy"}
+                  </button>
+                  {onTrace && (
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      style={{ padding: "1px 6px", fontSize: 10 }}
+                      onClick={() => onTrace(item.lineage_id)}
+                      title="Open in Trace / Verify screen"
+                    >
+                      {"\uD83D\uDD0D Trace"}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="raw-viewer">
               {fields.length > 0
@@ -520,7 +568,7 @@ function QueueView({ onClusterSelect }: { onClusterSelect: (id: string) => void 
 
 // --- ClusterDetail - 3s polling, free-text override, rollback -----------------
 
-function ClusterDetail({ clusterId, onBack, actor }: { clusterId: string; onBack: () => void; actor: string }) {
+function ClusterDetail({ clusterId, onBack, actor, onTrace }: { clusterId: string; onBack: () => void; actor: string; onTrace?: (id: string) => void }) {
   const { data, loading, error, stale, reload } = useFetch<ClusterDetailData>(
     `${API}/queue/clusters/${clusterId}`
   );
@@ -645,7 +693,7 @@ function ClusterDetail({ clusterId, onBack, actor }: { clusterId: string; onBack
         {/* Left: up to 5 raw samples + confidence scores */}
         <div>
           <div className="section-title">Raw Samples {"\u2014"} {Math.min(data.items.length, 5)} of {data.items.length}</div>
-          <RawSampleViewer items={data.items} />
+          <RawSampleViewer items={data.items} onTrace={onTrace} />
           <div className="mt-4">
             <div className="section-title">Confidence Scores</div>
             <div className="card" style={{ padding: "12px 14px" }}>
@@ -791,15 +839,15 @@ function PacksView() {
 
 // --- TraceView ---------------------------------------------------------------
 
-function TraceView() {
-  const [lineageId, setLineageId] = useState("");
+function TraceView({ initialLineageId }: { initialLineageId?: string }) {
+  const [lineageId, setLineageId] = useState(initialLineageId ?? "");
   const [result, setResult] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"trace" | "verify" | null>(null);
 
-  async function doRequest(endpoint: string, m: "trace" | "verify") {
-    const id = lineageId.trim();
+  const doRequest = useCallback(async (endpoint: string, m: "trace" | "verify", targetId?: string) => {
+    const id = (targetId ?? lineageId).trim();
     if (!id) return;
     setLoading(true); setError(""); setResult(null); setMode(m);
     try {
@@ -807,7 +855,14 @@ function TraceView() {
       if (!r.ok) { setError(`HTTP ${r.status} \u2014 lineage_id not found`); return; }
       setResult(await r.json());
     } catch (e) { setError(String(e)); } finally { setLoading(false); }
-  }
+  }, [lineageId]);
+
+  useEffect(() => {
+    if (initialLineageId) {
+      setLineageId(initialLineageId);
+      doRequest("trace", "trace", initialLineageId);
+    }
+  }, [initialLineageId, doRequest]);
 
   const verifyResult = mode === "verify" && result !== null && typeof result === "object"
     ? result as { verified: boolean; proof_message?: string }
@@ -928,6 +983,7 @@ type View = "dashboard" | "queue" | "cluster" | "packs" | "trace";
 export default function Home() {
   const [view, setView] = useState<View>("dashboard");
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
+  const [activeTraceId, setActiveTraceId] = useState<string>("");
   const [apiOk, setApiOk] = useState<boolean | null>(null);
 
   // Analyst identity - persisted to localStorage (design.md §5: never anonymous)
@@ -960,6 +1016,7 @@ export default function Home() {
   }, []);
 
   function nav(v: View) { setView(v); setSelectedCluster(null); }
+  function handleTrace(id: string) { setActiveTraceId(id); setView("trace"); setSelectedCluster(null); }
 
   const pageTitle: Record<View, string> = {
     dashboard: "Triage Dashboard",
@@ -1048,10 +1105,10 @@ export default function Home() {
             <QueueView onClusterSelect={id => { setSelectedCluster(id); setView("cluster"); }} />
           )}
           {view === "cluster" && selectedCluster && (
-            <ClusterDetail clusterId={selectedCluster} onBack={() => nav("queue")} actor={actor} />
+            <ClusterDetail clusterId={selectedCluster} onBack={() => nav("queue")} actor={actor} onTrace={handleTrace} />
           )}
           {view === "packs" && <PacksView />}
-          {view === "trace" && <TraceView />}
+          {view === "trace" && <TraceView initialLineageId={activeTraceId} />}
         </div>
       </main>
     </div>
