@@ -11,6 +11,7 @@ Orchestrates:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import UTC, datetime
@@ -111,7 +112,6 @@ class AutoOnboarder:
                     """,
                     (pack_id, actor, event_hash, now),
                 )
-                import json
                 conf_map_json = json.dumps(pack_dict.get("confirmed_mapping") or {})
                 cand_map_json = json.dumps({
                     k: {"candidate_ocsf_attribute": str(v).replace("$", ""), "similarity_score": 0.95}
@@ -121,7 +121,10 @@ class AutoOnboarder:
                     """
                     UPDATE review_queue
                     SET status = 'confirmed', assigned_analyst = ?, resolved_at = ?, confirmed_mapping = ?,
-                        candidate_mapping = CASE WHEN candidate_mapping = '{}' OR candidate_mapping IS NULL THEN ? ELSE candidate_mapping END
+                        candidate_mapping = CASE
+                            WHEN candidate_mapping = '{}' OR candidate_mapping IS NULL THEN ?
+                            ELSE candidate_mapping
+                        END
                     WHERE cluster_id = ?
                     """,
                     (actor, now, conf_map_json, cand_map_json, cluster_id),
