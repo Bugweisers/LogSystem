@@ -33,6 +33,19 @@ class SqlitePipelineRepository:
                 );
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS normalization_history (
+                    normalization_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lineage_id TEXT NOT NULL,
+                    extraction_id INTEGER NOT NULL,
+                    ocsf_class_uid INTEGER NOT NULL,
+                    ocsf_event_json TEXT NOT NULL,
+                    schema_valid INTEGER NOT NULL,
+                    validation_errors TEXT,
+                    published_to_bus INTEGER NOT NULL DEFAULT 0,
+                    normalized_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS pack_lifecycle_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pack_id TEXT NOT NULL,
@@ -72,3 +85,45 @@ class SqlitePipelineRepository:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT * FROM extraction_history WHERE lineage_id = ?", (lineage_id,)).fetchall()
             return [dict(r) for r in rows]
+
+    def record_normalization(
+        self,
+        lineage_id: str,
+        extraction_id: int,
+        ocsf_class_uid: int,
+        ocsf_event_json: str | dict[str, Any],
+        schema_valid: bool,
+        validation_errors: list[str] | dict[str, Any] | None = None,
+        published_to_bus: bool = False,
+    ) -> int:
+        now = datetime.now(UTC).isoformat()
+        event_json_str = (
+            ocsf_event_json if isinstance(ocsf_event_json, str) else json.dumps(ocsf_event_json, default=str)
+        )
+        errors_str = json.dumps(validation_errors) if validation_errors is not None else None
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO normalization_history (
+                    lineage_id, extraction_id, ocsf_class_uid, ocsf_event_json,
+                    schema_valid, validation_errors, published_to_bus, normalized_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    lineage_id,
+                    extraction_id,
+                    ocsf_class_uid,
+                    event_json_str,
+                    1 if schema_valid else 0,
+                    errors_str,
+                    1 if published_to_bus else 0,
+                    now,
+                ),
+            )
+            return cursor.lastrowid or 0
+
+    def get_normalizations(self, lineage_id: str) -> list[dict[str, Any]]:
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM normalization_history WHERE lineage_id = ?", (lineage_id,)).fetchall()
+            return [dict(r) for r in rows]
+

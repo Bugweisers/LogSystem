@@ -68,7 +68,10 @@ function ensureSchema(db: Database.Database): void {
       extraction_id INTEGER NOT NULL REFERENCES extraction_history(extraction_id),
       ocsf_class_uid INTEGER NOT NULL,
       ocsf_event_json TEXT NOT NULL,
-      processed_at TEXT NOT NULL
+      schema_valid INTEGER NOT NULL,
+      validation_errors TEXT,
+      published_to_bus INTEGER NOT NULL DEFAULT 0,
+      normalized_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS test_fixtures (
       fixture_id INTEGER PRIMARY KEY AUTOINCREMENT, pack_id TEXT NOT NULL REFERENCES mapping_packs(pack_id),

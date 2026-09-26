@@ -1,0 +1,11 @@
+{
+  "include": [
+    "services/pipeline-svc",
+    "packages/contracts/python",
+    "tools"
+  ],
+  "extraPaths": [
+    "services/pipeline-svc/src",
+    "packages/contracts/python"
+  ]
+}
