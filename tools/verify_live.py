@@ -35,7 +35,7 @@ from pipeline_svc.db import SqlitePipelineRepository
 from pipeline_svc.normalization import normalize_and_record
 from pipeline_svc.pack_registry import PackRegistry
 from pipeline_svc.router import Router
-from sinks_svc.service import SinksService
+from sinks_svc.service import SinksService  # pyright: ignore[reportMissingImports]  # type: ignore[import-not-found]
 
 
 def main() -> None:

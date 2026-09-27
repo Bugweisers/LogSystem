@@ -17,12 +17,12 @@ from typing import Any
 
 def escape_cef_header(value: str) -> str:
     """Escapes pipe (|) and backslash (\\) in CEF header fields."""
-    return str(value).replace("\\", "\\\\").replace("|", "\\|")
+    return value.replace("\\", "\\\\").replace("|", "\\|")
 
 
 def escape_cef_extension(value: str) -> str:
     """Escapes backslash (\\) and equals (=) in CEF extension value fields."""
-    return str(value).replace("\\", "\\\\").replace("=", "\\=")
+    return value.replace("\\", "\\\\").replace("=", "\\=")
 
 
 class SiemSink:

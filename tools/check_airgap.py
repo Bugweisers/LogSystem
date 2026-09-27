@@ -78,6 +78,8 @@ def run_runtime_airgap_drill() -> bool:
         sys.path.insert(0, str(REPO_ROOT / "services" / "pipeline-svc" / "src"))
         sys.path.insert(0, str(REPO_ROOT / "packages" / "contracts" / "python"))
 
+        from uuid import UUID
+
         from pipeline_svc.coldpath.drain import DrainParser
         from pipeline_svc.normalization import assemble_ocsf_event
         from ulpf_contracts import ExtractionEnvelope, PathTaken
@@ -86,7 +88,7 @@ def run_runtime_airgap_drill() -> bool:
         parser.parse("<164>Sep 26 2026: %ASA-4-106023: Deny tcp src 10.0.0.1 dst 1.1.1.1")
 
         env = ExtractionEnvelope(
-            lineage_id="00000000-0000-4000-8000-000000000001",
+            lineage_id=UUID("00000000-0000-4000-8000-000000000001"),
             source_type="cisco_asa",
             parser_version="1.3.0",
             extracted_fields={"src_ip": "10.0.0.1", "dst_ip": "1.1.1.1", "action": "Deny"},

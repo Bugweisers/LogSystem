@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from sinks_svc.siem import SiemSink
 
 
-def sample_ocsf_event() -> dict:
+def sample_ocsf_event() -> dict[str, Any]:
     return {
         "activity_id": 5,
         "activity_name": "Refuse",

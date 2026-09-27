@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -8,7 +9,7 @@ from sinks_svc.service import SinksService
 from sinks_svc.siem import SiemSink
 
 
-def sample_ocsf_event(seq: int = 1) -> dict:
+def sample_ocsf_event(seq: int = 1) -> dict[str, Any]:
     return {
         "activity_id": 5,
         "activity_name": "Refuse",

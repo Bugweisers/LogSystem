@@ -3,14 +3,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { API, TimeAgo } from "../components/Common";
+import { API, TimeAgo } from "../../components/Common";
 import {
   IconCompress,
   IconAccountTree,
   IconCheck,
   IconRefresh,
   IconVerified,
-} from "../components/Icons";
+} from "../../components/Icons";
 
 export default function DashboardPage() {
   const router = useRouter();

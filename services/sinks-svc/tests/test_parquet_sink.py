@@ -1,11 +1,12 @@
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from sinks_svc.parquet import ParquetLakeWriter
 
 
-def sample_ocsf_event() -> dict:
+def sample_ocsf_event() -> dict[str, Any]:
     return {
         "activity_id": 5,
         "activity_name": "Refuse",

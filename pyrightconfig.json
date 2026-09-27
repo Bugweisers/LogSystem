@@ -9,5 +9,15 @@
     "services/pipeline-svc/src",
     "services/sinks-svc/src",
     "packages/contracts/python"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "tools",
+      "extraPaths": [
+        "services/pipeline-svc/src",
+        "services/sinks-svc/src",
+        "packages/contracts/python"
+      ]
+    }
   ]
 }

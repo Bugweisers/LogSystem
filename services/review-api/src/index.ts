@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import { getDb } from "./db.js";
+import { readRawLogByPointer } from "./raw_reader.js";
 
 const execFileAsync = promisify(execFile);
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -220,7 +221,7 @@ app.get("/queue/clusters", (req, res) => {
   res.json({ clusters: rows, total, page: pageN, limit: limitN });
 });
 
-app.get("/queue/clusters/:cluster_id", (req, res) => {
+app.get("/queue/clusters/:cluster_id", async (req, res) => {
   const db = getDb();
   const { cluster_id } = req.params;
   const items = db.prepare(`
@@ -283,6 +284,9 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
     parsed.find(p => p.source_type && p.source_type !== "unknown")?.source_type ||
     parsed[0]!["source_type"];
 
+  const samplePointer = parsed[0]!["sample_raw_pointer"] as string;
+  const sampleRawLog = await readRawLogByPointer(samplePointer);
+
   return res.json({
     cluster_id,
     status: clusterStatus,
@@ -293,6 +297,7 @@ app.get("/queue/clusters/:cluster_id", (req, res) => {
     items: parsed,
     candidate_mapping: primaryCandidate,
     sample_raw_pointer: parsed[0]!["sample_raw_pointer"],
+    sample_raw_log: sampleRawLog,
   });
 });
 
@@ -474,17 +479,37 @@ app.post("/queue/clusters/:cluster_id/assign", (req, res) => {
 
 // ── /trace & /verify ──────────────────────────────────────────────────────────
 
-app.get("/trace/:lineage_id", (req, res) => {
+app.get("/raw/:lineage_id", async (req, res) => {
   const db = getDb();
   const { lineage_id } = req.params;
-  const raw = db.prepare("SELECT * FROM raw_events WHERE lineage_id = ?").get(lineage_id);
+  const raw = db.prepare("SELECT * FROM raw_events WHERE lineage_id = ?").get(lineage_id) as Record<string, any> | undefined;
+  if (!raw) return errorResponse(res, "NOT_FOUND", "lineage_id not found", 404);
+  const rawLog = await readRawLogByPointer(raw.storage_pointer);
+  return res.json({
+    lineage_id,
+    storage_pointer: raw.storage_pointer,
+    raw_log: rawLog || `SRC=${raw.source_ip} PROTO=${raw.transport_protocol} SIZE=${raw.raw_size_bytes}bytes`,
+    source_ip: raw.source_ip,
+    source_port: raw.source_port,
+    transport_protocol: raw.transport_protocol,
+    ingestion_timestamp: raw.ingestion_timestamp,
+  });
+});
+
+app.get("/trace/:lineage_id", async (req, res) => {
+  const db = getDb();
+  const { lineage_id } = req.params;
+  const raw = db.prepare("SELECT * FROM raw_events WHERE lineage_id = ?").get(lineage_id) as Record<string, any> | undefined;
   if (!raw) return errorResponse(res, "NOT_FOUND", "lineage_id not found", 404);
 
   const extractions = db.prepare("SELECT * FROM extraction_history WHERE lineage_id = ?").all(lineage_id);
   const queue = db.prepare("SELECT * FROM review_queue WHERE lineage_id = ?").all(lineage_id);
   const normalization = db.prepare("SELECT * FROM normalization_history WHERE lineage_id = ?").all(lineage_id);
 
-  return res.json({ lineage_id, raw_event: raw, extractions, review_queue: queue, normalization });
+  const rawLog = await readRawLogByPointer(raw.storage_pointer);
+  raw.raw_log_text = rawLog;
+
+  return res.json({ lineage_id, raw_event: raw, extractions, review_queue: queue, normalization, raw_log_text: rawLog });
 });
 
 app.get("/verify/:lineage_id", (req, res) => {
@@ -518,7 +543,7 @@ app.get("/verify/:lineage_id", (req, res) => {
 
 // ── /normalized — normalized OCSF events stream ─────────────────────────────
 
-app.get("/normalized", (req, res) => {
+app.get("/normalized", async (req, res) => {
   const db = getDb();
   const page = Math.max(1, parseInt((req.query["page"] as string) || "1"));
   const limit = Math.min(200, Math.max(1, parseInt((req.query["limit"] as string) || "25")));
@@ -545,10 +570,11 @@ app.get("/normalized", (req, res) => {
     LIMIT ? OFFSET ?
   `).all(limit, offset) as Record<string, unknown>[];
 
-  const parsed = rows.map(r => ({
+  const parsed = await Promise.all(rows.map(async r => ({
     ...r,
     ocsf_event: parseJson(r["ocsf_event_json"]),
-  }));
+    raw_log_text: await readRawLogByPointer(r["storage_pointer"] as string),
+  })));
 
   const total = (db.prepare("SELECT COUNT(*) as c FROM normalization_history").get() as { c: number }).c;
   return res.json({ total, items: parsed, page, limit });
