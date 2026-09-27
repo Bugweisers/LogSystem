@@ -71,3 +71,112 @@ export function ScoreBar({ score }: { score: number }) {
     </div>
   );
 }
+
+export function Pagination({
+  page,
+  limit,
+  total,
+  onPageChange,
+  onLimitChange,
+}: {
+  page: number;
+  limit: number;
+  total: number;
+  onPageChange: (newPage: number) => void;
+  onLimitChange?: (newLimit: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const start = total === 0 ? 0 : (page - 1) * limit + 1;
+  const end = Math.min(total, page * limit);
+
+  return (
+    <div style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "10px 16px",
+      background: "var(--bg-subtle)",
+      borderTop: "1px solid var(--border-subtle)",
+      fontFamily: "var(--font-mono)",
+      fontSize: 11,
+      flexWrap: "wrap",
+      gap: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ color: "var(--text-secondary)" }}>
+          Showing <strong style={{ color: "var(--text-primary)" }}>{start}–{end}</strong> of <strong style={{ color: "var(--accent-blue)" }}>{total.toLocaleString()}</strong>
+        </span>
+        {onLimitChange && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ color: "var(--text-muted)", fontSize: 10 }}>Per Page:</span>
+            <select
+              value={limit}
+              onChange={(e) => {
+                onLimitChange(Number(e.target.value));
+                onPageChange(1);
+              }}
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--border-muted)",
+                borderRadius: 4,
+                padding: "2px 6px",
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                color: "var(--text-primary)",
+                cursor: "pointer",
+              }}
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: 10, padding: "3px 8px" }}
+          disabled={page <= 1}
+          onClick={() => onPageChange(1)}
+          title="First Page"
+        >
+          « First
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: 10, padding: "3px 8px" }}
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          title="Previous Page"
+        >
+          ‹ Prev
+        </button>
+        <span style={{ padding: "0 8px", color: "var(--text-primary)", fontWeight: 600 }}>
+          Page {page} of {totalPages}
+        </span>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: 10, padding: "3px 8px" }}
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          title="Next Page"
+        >
+          Next ›
+        </button>
+        <button
+          className="btn-secondary"
+          style={{ fontSize: 10, padding: "3px 8px" }}
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+          title="Last Page"
+        >
+          Last »
+        </button>
+      </div>
+    </div>
+  );
+}

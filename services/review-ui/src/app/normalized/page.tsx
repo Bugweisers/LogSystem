@@ -2,33 +2,51 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { API, TimeAgo } from "../../components/Common";
-import { IconTerminal, IconRefresh } from "../../components/Icons";
+import { API, TimeAgo, Pagination } from "../../components/Common";
+import { IconTerminal, IconRefresh, IconSearch } from "../../components/Icons";
 
 export default function NormalizedPage() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
+  const [total, setTotal] = useState(0);
+  const [pathFilter, setPathFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const fetchItems = useCallback(() => {
     setLoading(true);
-    fetch(`${API}/normalized?limit=50`)
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("limit", String(limit));
+    if (pathFilter !== "all") params.set("path", pathFilter);
+    if (searchQuery.trim()) params.set("search", searchQuery.trim());
+
+    fetch(`${API}/normalized?${params.toString()}`)
       .then(r => r.json())
       .then(d => {
-        const list = d.items || d.events || [];
-        setItems(list);
-        if (list.length > 0 && !expandedId) {
-          setExpandedId(list[0].lineage_id);
-        }
+        setItems(d.items || d.events || []);
+        setTotal(d.total || 0);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [expandedId]);
+  }, [page, limit, pathFilter, searchQuery]);
 
   useEffect(() => {
     fetchItems();
   }, [fetchItems]);
+
+  const handlePathFilterChange = (p: string) => {
+    setPathFilter(p);
+    setPage(1);
+  };
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    setPage(1);
+  };
 
   const handleCopy = (id: string, text: string) => {
     navigator.clipboard?.writeText(text);
@@ -39,13 +57,14 @@ export default function NormalizedPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="panel-card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "var(--bg-subtle)", borderBottom: "1px solid var(--border-subtle)" }}>
+        {/* Header Toolbar */}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "var(--bg-subtle)", borderBottom: "1px solid var(--border-subtle)", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <IconTerminal style={{ width: 18, height: 18, color: "var(--accent-blue)" }} />
             <div>
               <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>Canonical OCSF 4001 Security Event Stream</strong>
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                Click any event row to expand the full normalized OCSF JSON and raw ingestion source metadata
+                Streaming live normalized security telemetry ({total.toLocaleString()} total events in ledger)
               </div>
             </div>
           </div>
@@ -54,11 +73,39 @@ export default function NormalizedPage() {
               <IconRefresh className="nav-icon" style={{ width: 12, height: 12 }} />
               <span>Refresh</span>
             </button>
+            {/* Path Filter Tabs */}
+            <div style={{ display: "flex", background: "var(--border-subtle)", padding: 2, borderRadius: 6 }}>
+              {["all", "HOT", "COLD"].map(p => (
+                <button
+                  key={p}
+                  className={`filter-tab ${pathFilter === p ? "active" : ""}`}
+                  onClick={() => handlePathFilterChange(p)}
+                >
+                  {p === "all" ? "ALL PATHS" : `${p} PATH`}
+                </button>
+              ))}
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent-emerald)" }} />
               <span className="text-mono" style={{ color: "var(--accent-emerald)", fontWeight: 700, fontSize: 10 }}>LIVE</span>
             </div>
           </div>
+        </div>
+
+        {/* Search Bar within table */}
+        <div style={{ padding: "8px 16px", background: "#ffffff", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8 }}>
+          <IconSearch style={{ width: 14, height: 14, color: "var(--text-muted)" }} />
+          <input
+            placeholder="Search by Lineage ID, Source IP, Device, or OCSF payload..."
+            value={searchQuery}
+            onChange={e => handleSearchChange(e.target.value)}
+            style={{ width: 360, border: "none", outline: "none", fontFamily: "var(--font-sans)", fontSize: 11, color: "var(--text-primary)" }}
+          />
+          {searchQuery && (
+            <button onClick={() => handleSearchChange("")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: 12 }}>
+              ✕
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -67,7 +114,7 @@ export default function NormalizedPage() {
           </div>
         ) : items.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
-            No normalized events in stream. Ingest logs via CSV or UDP/HTTP socket, or promote a cluster from the review queue.
+            No normalized events match current filter.
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -95,9 +142,9 @@ export default function NormalizedPage() {
                     <React.Fragment key={item.lineage_id}>
                       <tr
                         style={{ cursor: "pointer", background: isExpanded ? "var(--bg-subtle)" : undefined }}
-                        onClick={() => setExpandedId(isExpanded ? null : item.lineage_id)}
+                        onClick={() => setExpandedId(prev => prev === item.lineage_id ? null : item.lineage_id)}
                       >
-                        <td style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+                        <td style={{ textAlign: "center", color: isExpanded ? "var(--accent-blue)" : "var(--text-muted)", fontSize: 13, userSelect: "none" }}>
                           {isExpanded ? "▼" : "▶"}
                         </td>
                         <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--accent-blue)" }}>
@@ -153,6 +200,17 @@ export default function NormalizedPage() {
                                   >
                                     Full Forensic DAG Trace →
                                   </Link>
+                                  <button
+                                    className="btn-secondary"
+                                    style={{ fontSize: 10, padding: "2px 8px", color: "var(--accent-rose)", borderColor: "var(--border-subtle)" }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedId(null);
+                                    }}
+                                    title="Close details"
+                                  >
+                                    ✕ Close
+                                  </button>
                                 </div>
                               </div>
 
@@ -217,6 +275,15 @@ export default function NormalizedPage() {
             </table>
           </div>
         )}
+
+        {/* Pagination Bar */}
+        <Pagination
+          page={page}
+          limit={limit}
+          total={total}
+          onPageChange={setPage}
+          onLimitChange={setLimit}
+        />
       </div>
     </div>
   );

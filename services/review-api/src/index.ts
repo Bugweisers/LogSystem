@@ -179,12 +179,12 @@ app.get("/queue", (req, res) => {
 
 app.get("/queue/clusters", (req, res) => {
   const db = getDb();
-  const { page = "1", limit = "20" } = req.query as Record<string, string>;
+  const { page = "1", limit = "20", status, search } = req.query as Record<string, string>;
   const pageN = Math.max(1, parseInt(page));
   const limitN = Math.min(100, Math.max(1, parseInt(limit)));
   const offset = (pageN - 1) * limitN;
 
-  const rows = db.prepare(`
+  let baseQuery = `
     SELECT
       rq.cluster_id,
       CASE 
@@ -201,23 +201,41 @@ app.get("/queue/clusters", (req, res) => {
     FROM review_queue rq
     LEFT JOIN extraction_history eh ON eh.lineage_id = rq.lineage_id
     GROUP BY rq.cluster_id
+  `;
+
+  let wrapperQuery = `SELECT * FROM (${baseQuery}) clusters_sub`;
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (status && status !== "all") {
+    conditions.push("status = ?");
+    params.push(status);
+  }
+
+  if (search && search.trim()) {
+    conditions.push("(cluster_id LIKE ? OR source_type LIKE ?)");
+    const s = `%${search.trim()}%`;
+    params.push(s, s);
+  }
+
+  if (conditions.length > 0) {
+    wrapperQuery += " WHERE " + conditions.join(" AND ");
+  }
+
+  const countSql = `SELECT COUNT(*) as c FROM (${wrapperQuery}) count_sub`;
+  const total = (db.prepare(countSql).get(...params) as { c: number }).c;
+
+  wrapperQuery += `
     ORDER BY CASE 
-      WHEN (CASE 
-        WHEN SUM(CASE WHEN rq.status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
-        WHEN SUM(CASE WHEN rq.status = 'in_review' THEN 1 ELSE 0 END) > 0 THEN 'in_review'
-        ELSE MIN(rq.status)
-      END) = 'pending' THEN 0 
-      WHEN (CASE 
-        WHEN SUM(CASE WHEN rq.status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
-        WHEN SUM(CASE WHEN rq.status = 'in_review' THEN 1 ELSE 0 END) > 0 THEN 'in_review'
-        ELSE MIN(rq.status)
-      END) = 'in_review' THEN 1 
+      WHEN status = 'pending' THEN 0 
+      WHEN status = 'in_review' THEN 1 
       ELSE 2 
     END, sample_count DESC, newest_at DESC
     LIMIT ? OFFSET ?
-  `).all(limitN, offset);
+  `;
+  params.push(limitN, offset);
 
-  const total = (db.prepare(`SELECT COUNT(DISTINCT cluster_id) as c FROM review_queue`).get() as { c: number }).c;
+  const rows = db.prepare(wrapperQuery).all(...params);
   res.json({ clusters: rows, total, page: pageN, limit: limitN });
 });
 
@@ -548,6 +566,33 @@ app.get("/normalized", async (req, res) => {
   const page = Math.max(1, parseInt((req.query["page"] as string) || "1"));
   const limit = Math.min(200, Math.max(1, parseInt((req.query["limit"] as string) || "25")));
   const offset = (page - 1) * limit;
+  const path = req.query["path"] as string | undefined;
+  const search = req.query["search"] as string | undefined;
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (path && (path === "HOT" || path === "COLD")) {
+    conditions.push("eh.path_taken = ?");
+    params.push(path);
+  }
+
+  if (search && search.trim()) {
+    conditions.push("(nh.lineage_id LIKE ? OR re.source_ip LIKE ? OR eh.source_type LIKE ? OR nh.ocsf_event_json LIKE ?)");
+    const s = `%${search.trim()}%`;
+    params.push(s, s, s, s);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const countSql = `
+    SELECT COUNT(*) as c
+    FROM normalization_history nh
+    LEFT JOIN raw_events re ON re.lineage_id = nh.lineage_id
+    LEFT JOIN extraction_history eh ON eh.lineage_id = nh.lineage_id
+    ${where}
+  `;
+  const total = (db.prepare(countSql).get(...params) as { c: number }).c;
 
   const rows = db.prepare(`
     SELECT
@@ -566,9 +611,10 @@ app.get("/normalized", async (req, res) => {
     FROM normalization_history nh
     LEFT JOIN raw_events re ON re.lineage_id = nh.lineage_id
     LEFT JOIN extraction_history eh ON eh.lineage_id = nh.lineage_id
+    ${where}
     ORDER BY nh.normalization_id DESC
     LIMIT ? OFFSET ?
-  `).all(limit, offset) as Record<string, unknown>[];
+  `).all(...params, limit, offset) as Record<string, unknown>[];
 
   const parsed = await Promise.all(rows.map(async r => ({
     ...r,
@@ -576,7 +622,6 @@ app.get("/normalized", async (req, res) => {
     raw_log_text: await readRawLogByPointer(r["storage_pointer"] as string),
   })));
 
-  const total = (db.prepare("SELECT COUNT(*) as c FROM normalization_history").get() as { c: number }).c;
   return res.json({ total, items: parsed, page, limit });
 });
 
