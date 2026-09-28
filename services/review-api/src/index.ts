@@ -179,7 +179,7 @@ app.get("/queue", (req, res) => {
 
 app.get("/queue/clusters", (req, res) => {
   const db = getDb();
-  const { page = "1", limit = "20", status, search } = req.query as Record<string, string>;
+  const { page = "1", limit = "20", status, search, sort = "newest" } = req.query as Record<string, string>;
   const pageN = Math.max(1, parseInt(page));
   const limitN = Math.min(100, Math.max(1, parseInt(limit)));
   const offset = (pageN - 1) * limitN;
@@ -225,12 +225,15 @@ app.get("/queue/clusters", (req, res) => {
   const countSql = `SELECT COUNT(*) as c FROM (${wrapperQuery}) count_sub`;
   const total = (db.prepare(countSql).get(...params) as { c: number }).c;
 
+  let orderClause = "newest_at DESC, sample_count DESC";
+  if (sort === "samples") {
+    orderClause = "sample_count DESC, newest_at DESC";
+  } else if (sort === "oldest") {
+    orderClause = "oldest_at ASC, newest_at ASC";
+  }
+
   wrapperQuery += `
-    ORDER BY CASE 
-      WHEN status = 'pending' THEN 0 
-      WHEN status = 'in_review' THEN 1 
-      ELSE 2 
-    END, sample_count DESC, newest_at DESC
+    ORDER BY ${orderClause}
     LIMIT ? OFFSET ?
   `;
   params.push(limitN, offset);
@@ -809,6 +812,7 @@ app.post(["/ingest/csv", "/api/upload-csv"], async (req, res) => {
   }
 
   const ingestionUrl = process.env.INGESTION_HTTP_URL || "http://localhost:5142";
+  const pipelineUrl = process.env.PIPELINE_HTTP_URL || "http://localhost:8000";
   let ingestedEvents: Array<{ lineage_id: string; sha256_hash?: string }> = [];
 
   try {
@@ -843,17 +847,30 @@ app.post(["/ingest/csv", "/api/upload-csv"], async (req, res) => {
   // Trigger pipeline extraction and coldpath Drain
   const lineageIds = ingestedEvents.map(e => e.lineage_id);
   if (lineageIds.length > 0) {
-    let tempFile: string | null = null;
     try {
-      const workerScript = join(REPO_ROOT, "tools", "pipeline_worker.py");
-      tempFile = join(os.tmpdir(), `ulpf_lineage_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
-      await fs.writeFile(tempFile, JSON.stringify(lineageIds), "utf-8");
-      await execFileAsync("python", [workerScript, "--lineage-file", tempFile]);
+      const pipeRes = await fetch(`${pipelineUrl}/process`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineage_ids: lineageIds }),
+      });
+      if (!pipeRes.ok) {
+        console.warn(`Pipeline HTTP returned ${pipeRes.status}`);
+      }
     } catch (err: any) {
-      console.warn("Pipeline worker execution note:", err.message);
-    } finally {
-      if (tempFile) {
-        try { await fs.unlink(tempFile); } catch {}
+      console.warn("Pipeline service HTTP dispatch note:", err.message);
+      // Fallback to local python process if running directly outside docker
+      let tempFile: string | null = null;
+      try {
+        const workerScript = join(REPO_ROOT, "tools", "pipeline_worker.py");
+        tempFile = join(os.tmpdir(), `ulpf_lineage_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+        await fs.writeFile(tempFile, JSON.stringify(lineageIds), "utf-8");
+        await execFileAsync("python", [workerScript, "--lineage-file", tempFile]);
+      } catch {
+        // ignore fallback errors
+      } finally {
+        if (tempFile) {
+          try { await fs.unlink(tempFile); } catch {}
+        }
       }
     }
   }

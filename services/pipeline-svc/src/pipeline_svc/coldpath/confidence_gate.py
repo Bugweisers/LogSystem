@@ -38,10 +38,11 @@ class ConfidenceGate:
         mapped_fields: dict[str, dict[str, Any]],
         extraction_id: int = 0,
         parser_version: str = "0.1.0-cold",
+        sample_raw_pointer: str | None = None,
     ) -> tuple[ExtractionEnvelope, bool]:
         """
         Evaluates mapped fields.
-        If any field has score < threshold:
+        If any field has score < threshold or source_type is cold_path_unmapped:
           - Inserts record into `review_queue` table
           - Returns envelope with path_taken=COLD and routed_to_review_queue=True
         Otherwise:
@@ -75,13 +76,14 @@ class ConfidenceGate:
             has_low_confidence = True
 
         routed_to_review_queue = False
-        if has_low_confidence:
+        if has_low_confidence or source_type == "cold_path_unmapped":
             routed_to_review_queue = True
             self._enqueue_for_review(
                 lineage_id=str_lineage,
                 extraction_id=extraction_id,
                 cluster_id=cluster_id,
                 candidate_mapping=candidate_mapping,
+                sample_raw_pointer=sample_raw_pointer,
             )
 
         envelope = ExtractionEnvelope(
@@ -101,6 +103,7 @@ class ConfidenceGate:
         extraction_id: int,
         cluster_id: str,
         candidate_mapping: dict[str, Any],
+        sample_raw_pointer: str | None = None,
     ) -> None:
         """Records the pending review item into SQLite review_queue table."""
         now = datetime.now(UTC).isoformat()
@@ -110,8 +113,8 @@ class ConfidenceGate:
                     """
                     INSERT INTO review_queue (
                         lineage_id, extraction_id, candidate_mapping, cluster_id,
-                        status, created_at
-                    ) VALUES (?, ?, ?, ?, 'pending', ?)
+                        status, created_at, sample_raw_pointer
+                    ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
                     """,
                     (
                         lineage_id,
@@ -119,6 +122,7 @@ class ConfidenceGate:
                         json.dumps(candidate_mapping),
                         cluster_id,
                         now,
+                        sample_raw_pointer,
                     ),
                 )
             else:
@@ -127,8 +131,8 @@ class ConfidenceGate:
                         """
                         INSERT INTO review_queue (
                             lineage_id, extraction_id, candidate_mapping, cluster_id,
-                            status, created_at
-                        ) VALUES (?, ?, ?, ?, 'pending', ?)
+                            status, created_at, sample_raw_pointer
+                        ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
                         """,
                         (
                             lineage_id,
@@ -136,9 +140,34 @@ class ConfidenceGate:
                             json.dumps(candidate_mapping),
                             cluster_id,
                             now,
+                            sample_raw_pointer,
                         ),
                     )
                     conn.commit()
         except sqlite3.OperationalError:
-            # If table doesn't exist yet in test runner, ignore or log
-            pass
+            # Fallback for schemas without sample_raw_pointer column
+            try:
+                if self._shared_conn is not None:
+                    self._shared_conn.execute(
+                        """
+                        INSERT INTO review_queue (
+                            lineage_id, extraction_id, candidate_mapping, cluster_id,
+                            status, created_at
+                        ) VALUES (?, ?, ?, ?, 'pending', ?)
+                        """,
+                        (lineage_id, extraction_id, json.dumps(candidate_mapping), cluster_id, now),
+                    )
+                else:
+                    with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO review_queue (
+                                lineage_id, extraction_id, candidate_mapping, cluster_id,
+                                status, created_at
+                            ) VALUES (?, ?, ?, ?, 'pending', ?)
+                            """,
+                            (lineage_id, extraction_id, json.dumps(candidate_mapping), cluster_id, now),
+                        )
+                        conn.commit()
+            except Exception:
+                pass

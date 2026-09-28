@@ -31,6 +31,7 @@ class Router:
         raw_payload: str | bytes,
         lineage_id: str | UUID,
         enable_cold_path: bool = True,
+        sample_raw_pointer: str | None = None,
     ) -> ExtractionEnvelope | None:
         text = raw_payload.decode("utf-8", errors="replace") if isinstance(raw_payload, bytes) else raw_payload
 
@@ -79,6 +80,7 @@ class Router:
                 source_type="cold_path_unmapped",
                 cluster_id=cluster.cluster_id,
                 mapped_fields=mapped,
+                sample_raw_pointer=sample_raw_pointer,
             )
             return envelope
 

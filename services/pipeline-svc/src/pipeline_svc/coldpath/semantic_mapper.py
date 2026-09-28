@@ -8,11 +8,19 @@ checks to map extracted raw tokens to standard OCSF 4001 attributes.
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
+from collections import Counter
 from typing import Any
 
-from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore[import-untyped]
-from sklearn.metrics.pairwise import cosine_similarity  # type: ignore[import-untyped]
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore[import-untyped]
+    from sklearn.metrics.pairwise import cosine_similarity  # type: ignore[import-untyped]
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
+    TfidfVectorizer = None  # type: ignore[assignment]
+    cosine_similarity = None  # type: ignore[assignment]
 
 # Target OCSF attributes with semantic description corpora
 OCSF_VOCABULARY: dict[str, list[str]] = {
@@ -111,15 +119,58 @@ class SemanticMapper:
         self.attributes = list(OCSF_VOCABULARY.keys())
         self.doc_corpus = [" ".join(OCSF_VOCABULARY[attr]) for attr in self.attributes]
 
-        # Initialize TF-IDF vectorizer over character n-grams (3-5) and word n-grams
-        self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5))
-        self.tfidf_matrix = self.vectorizer.fit_transform(self.doc_corpus)
+        if HAS_SKLEARN and TfidfVectorizer is not None:
+            # Initialize TF-IDF vectorizer over character n-grams (3-5) and word n-grams
+            self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5))
+            self.tfidf_matrix = self.vectorizer.fit_transform(self.doc_corpus)
+        else:
+            self.vectorizer = None
+            self.tfidf_matrix = None
+            self._init_pure_python_tfidf()
+
+    def _get_char_wb_ngrams(self, text: str, min_n: int = 3, max_n: int = 5) -> list[str]:
+        words = text.lower().replace("_", " ").split()
+        ngrams: list[str] = []
+        for word in words:
+            padded = f" {word} "
+            for n in range(min_n, max_n + 1):
+                for i in range(len(padded) - n + 1):
+                    ngrams.append(padded[i:i + n])
+        return ngrams
+
+    def _init_pure_python_tfidf(self) -> None:
+        self._doc_ngrams = [self._get_char_wb_ngrams(doc) for doc in self.doc_corpus]
+        df: Counter[str] = Counter()
+        for ng in self._doc_ngrams:
+            for g in set(ng):
+                df[g] += 1
+        n_docs = len(self.doc_corpus)
+        self._idf = {g: math.log((1 + n_docs) / (1 + count)) + 1.0 for g, count in df.items()}
+        self._doc_vecs: list[dict[str, float]] = []
+        self._doc_norms: list[float] = []
+        for ng in self._doc_ngrams:
+            tf = Counter(ng)
+            vec = {g: cnt * self._idf.get(g, 1.0) for g, cnt in tf.items()}
+            norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
+            self._doc_vecs.append(vec)
+            self._doc_norms.append(norm)
 
     def compute_lexical_similarity(self, query: str) -> dict[str, float]:
         """Calculates cosine similarity between a token key and all target OCSF attributes."""
-        q_vec = self.vectorizer.transform([query.lower().replace("_", " ")])
-        sims = cosine_similarity(q_vec, self.tfidf_matrix)[0]
-        return {attr: float(sims[i]) for i, attr in enumerate(self.attributes)}
+        if HAS_SKLEARN and self.vectorizer is not None and cosine_similarity is not None:
+            q_vec = self.vectorizer.transform([query.lower().replace("_", " ")])
+            sims = cosine_similarity(q_vec, self.tfidf_matrix)[0]
+            return {attr: float(sims[i]) for i, attr in enumerate(self.attributes)}
+
+        q_ng = self._get_char_wb_ngrams(query)
+        q_tf = Counter(q_ng)
+        q_vec = {g: cnt * self._idf.get(g, 1.0) for g, cnt in q_tf.items()}
+        q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1.0
+        results: dict[str, float] = {}
+        for i, attr in enumerate(self.attributes):
+            dot = sum(v * self._doc_vecs[i].get(g, 0.0) for g, v in q_vec.items())
+            results[attr] = round(dot / (q_norm * self._doc_norms[i]), 4)
+        return results
 
     def map_field(
         self,

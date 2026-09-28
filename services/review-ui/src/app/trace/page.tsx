@@ -13,7 +13,7 @@ import {
   IconCopy,
 } from "../../components/Icons";
 
-export default function TracePage() {
+function TraceContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -494,5 +494,13 @@ export default function TracePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function TracePage() {
+  return (
+    <React.Suspense fallback={<div className="panel-card" style={{ padding: 40, textAlign: "center", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>Loading lineage trace...</div>}>
+      <TraceContent />
+    </React.Suspense>
   );
 }

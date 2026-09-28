@@ -9,6 +9,7 @@ export default function QueuePage() {
   const [clusters, setClusters] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<string>("newest");
   const [searchQuery, setSearchQuery] = useState("");
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -20,6 +21,7 @@ export default function QueuePage() {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("limit", String(limit));
+    params.set("sort", sortBy);
     if (filterStatus !== "all") params.set("status", filterStatus);
     if (searchQuery.trim()) params.set("search", searchQuery.trim());
 
@@ -31,7 +33,7 @@ export default function QueuePage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [page, limit, filterStatus, searchQuery]);
+  }, [page, limit, filterStatus, searchQuery, sortBy]);
 
   useEffect(() => {
     fetchClusters();
@@ -73,15 +75,34 @@ export default function QueuePage() {
             <IconLayers style={{ width: 18, height: 18, color: "var(--accent-blue)" }} />
             <div>
               <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>Cold-Path Review Queue</strong>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Drain3 Discovered Template Clusters ({total.toLocaleString()} total)</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Drain3 Discovered Template Clusters ({total.toLocaleString()} total · Newest First)</div>
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <button className="btn-secondary" style={{ fontSize: 11, padding: "3px 8px" }} onClick={fetchClusters}>
               <IconRefresh className="nav-icon" style={{ width: 12, height: 12 }} />
               <span>Refresh</span>
             </button>
+
+            {/* Sort Toggle */}
+            <div style={{ display: "flex", background: "var(--border-subtle)", padding: 2, borderRadius: 6 }}>
+              {[
+                { id: "newest", label: "NEWEST FIRST" },
+                { id: "samples", label: "MOST SAMPLES" },
+                { id: "oldest", label: "OLDEST" },
+              ].map(s => (
+                <button
+                  key={s.id}
+                  className={`filter-tab ${sortBy === s.id ? "active" : ""}`}
+                  onClick={() => { setSortBy(s.id); setPage(1); }}
+                  title={`Sort clusters by ${s.label.toLowerCase()}`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
             {/* Filter Tabs */}
             <div style={{ display: "flex", background: "var(--border-subtle)", padding: 2, borderRadius: 6 }}>
               {["all", "pending", "in_review", "confirmed", "rejected"].map(st => (
@@ -131,7 +152,7 @@ export default function QueuePage() {
                   <th>Device Source</th>
                   <th>Samples</th>
                   <th>Confidence</th>
-                  <th>Oldest Event</th>
+                  <th>Latest Event</th>
                   <th>Analyst Assigned</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
@@ -159,7 +180,7 @@ export default function QueuePage() {
                       <ScoreBar score={c.status === "confirmed" ? 0.95 : 0.72} />
                     </td>
                     <td style={{ color: "var(--text-muted)", fontSize: 11 }}>
-                      <TimeAgo iso={c.oldest_at} />
+                      <TimeAgo iso={c.newest_at || c.oldest_at} />
                     </td>
                     <td>
                       {c.assigned_analyst ? (

@@ -149,7 +149,7 @@ def process_events(
         if not raw_text:
             raw_text = f"source_ip={row['source_ip']} port={row['source_port']} proto={row['transport_protocol']}"
 
-        envelope = router.route_and_extract(raw_text, lid, enable_cold_path=True)
+        envelope = router.route_and_extract(raw_text, lid, enable_cold_path=True, sample_raw_pointer=storage_ptr)
 
         if envelope:
             ext_id = repo.record_extraction(envelope)
@@ -181,10 +181,32 @@ def process_events(
                     })
             else:
                 # Cold path: Drain cluster or review queue
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE review_queue SET extraction_id = ?, sample_raw_pointer = ? WHERE lineage_id = ?",
                     (ext_id, storage_ptr, lid),
                 )
+                if cur.rowcount == 0:
+                    from datetime import datetime, timezone
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    cand = {
+                        k: {
+                            "candidate_ocsf_attribute": k,
+                            "similarity_score": envelope.confidence_scores.get(k, 0.85),
+                            "alternate_candidates": [],
+                        }
+                        for k in envelope.extracted_fields
+                    }
+                    cid = f"drain-cluster-{next_seq:04d}"
+                    conn.execute(
+                        """
+                        INSERT INTO review_queue (
+                            lineage_id, extraction_id, candidate_mapping, cluster_id,
+                            status, created_at, sample_raw_pointer
+                        ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                        """,
+                        (lid, ext_id, json.dumps(cand), cid, now_str, storage_ptr),
+                    )
+
                 results.append({
                     "lineage_id": lid,
                     "path_taken": "COLD",

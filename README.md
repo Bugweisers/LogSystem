@@ -16,6 +16,8 @@ ULPF ingests raw logs from perimeter devices (firewalls, IPS/IDS, VPN gateways, 
 |---|---|
 | [`docs/prd.md`](docs/prd.md) | Every feature/requirement, MVP vs. full, success criteria |
 | [`docs/architecture.md`](docs/architecture.md) | Services, data flow, DB schema, payload contracts, naming rules |
+| [`docs/architecture.html`](docs/architecture.html) | **Interactive Architecture Diagram** — Standalone SVG visualization with views & trace |
+| [`docs/EVALUATOR_WALKTHROUGH_SCRIPT.md`](docs/EVALUATOR_WALKTHROUGH_SCRIPT.md) | **15–20 Min Evaluator Presentation Script** — Video walkthrough & mentor defense guide |
 | [`docs/design.md`](docs/design.md) | UI design system, page layouts, forms, API/CLI conventions |
 | [`docs/phases.md`](docs/phases.md) | Coding phases M0–M8, deliverables, acceptance tests, owners |
 | [`docs/context.md`](docs/context.md) | **Living** log of what's actually been built — read this first |
@@ -75,7 +77,29 @@ ulpf/
 - Node.js 20+ with `npm`
 - `make` (optional but recommended)
 
-### Quick Setup
+### One-Line Docker Run (Recommended)
+
+To spin up all 6 microservices in isolated, hardened containers with one command:
+
+```bash
+docker compose up --build -d
+```
+
+| Service | Container Name | Host URL / Port | Health Check |
+|---|---|---|---|
+| **Review UI** (Next.js Dashboard) | `ulpf-review-ui` | `http://localhost:3100` | `http://localhost:3100` |
+| **Review API** (REST backend) | `ulpf-review-api` | `http://localhost:4000` | `http://localhost:4000/health` |
+| **Ingestion Service** (Syslog / HTTP) | `ulpf-ingestion-svc` | `UDP :5140`, `TCP :5141`, `HTTP :5142` | `http://localhost:5142/health` |
+| **Integrity Service** (Merkle / Ledger) | `ulpf-integrity-svc` | `http://localhost:5143` | `http://localhost:5143/health` |
+| **Pipeline Service** (Parsers / OCSF) | `ulpf-pipeline-svc` | `http://localhost:8000` | `http://localhost:8000/health` |
+| **Sinks Service** (SIEM / Parquet Lake) | `ulpf-sinks-svc` | `http://localhost:8001` | `http://localhost:8001/health` |
+
+To stop the entire stack:
+```bash
+docker compose down
+```
+
+### Local Development Setup (Without Docker)
 
 ```bash
 # Install all dependencies, run DB migration, generate dev keypair

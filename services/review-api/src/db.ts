@@ -3,8 +3,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-// Go up from services/review-api/src → repo root
-const DB_PATH = join(__dir, "..", "..", "..", "ulpf.db");
+const DB_PATH = process.env.DB_PATH || join(__dir, "..", "..", "..", "ulpf.db");
 
 let _db: Database.Database | null = null;
 

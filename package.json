@@ -5,7 +5,7 @@
   "description": "ULPF monorepo root — use pnpm workspaces",
   "scripts": {
     "dev": "pnpm --filter @ulpf/review-ui dev",
-    "dev:all": "pnpm --filter @ulpf/review-ui dev",
+    "dev:all": "pnpm --filter \"./services/**\" --parallel dev",
     "dev:ui": "pnpm --filter @ulpf/review-ui dev",
     "dev:api": "pnpm --filter @ulpf/review-api dev",
     "dev:ingest": "pnpm --filter @ulpf/ingestion-svc dev",
@@ -21,5 +21,11 @@
     "benchmark": "python tools/benchmark.py",
     "airgap:check": "python tools/check_airgap.py",
     "verify:live": "python tools/verify_live.py"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }

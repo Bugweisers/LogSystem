@@ -19,13 +19,13 @@ export * from "./service.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dir, "..", "..", "..");
-const DB_PATH = join(REPO_ROOT, "ulpf.db");
-const DATA_DIR = join(REPO_ROOT, "data");
+const DB_PATH = process.env.DB_PATH || join(REPO_ROOT, "ulpf.db");
+const DATA_DIR = process.env.DATA_DIR || (process.env.RAW_STORE_DIR ? dirname(process.env.RAW_STORE_DIR) : join(REPO_ROOT, "data"));
 
 export async function main(): Promise<void> {
-  const udpPort = parseInt(process.env.ULPF_UDP_PORT || "5140", 10);
-  const tcpPort = parseInt(process.env.ULPF_TCP_PORT || "5141", 10);
-  const httpPort = parseInt(process.env.ULPF_HTTP_PORT || "5142", 10);
+  const udpPort = parseInt(process.env.SYSLOG_UDP_PORT || process.env.ULPF_UDP_PORT || "5140", 10);
+  const tcpPort = parseInt(process.env.SYSLOG_TCP_PORT || process.env.ULPF_TCP_PORT || "5141", 10);
+  const httpPort = parseInt(process.env.PORT || process.env.ULPF_HTTP_PORT || "5142", 10);
 
   console.log("Starting ingestion-svc (M1)...");
   const service = new IngestionService({
@@ -46,9 +46,7 @@ export async function main(): Promise<void> {
   console.log(`ingestion-svc listening on UDP ${udpPort}, TCP ${tcpPort}, HTTP ${httpPort}`);
 }
 
-if (process.argv[1] && process.argv[1].endsWith("index.ts")) {
-  main().catch((err) => {
-    console.error("Failed to start ingestion-svc:", err);
-    process.exit(1);
-  });
-}
+main().catch((err) => {
+  console.error("Failed to start ingestion-svc:", err);
+  process.exit(1);
+});

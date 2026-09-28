@@ -1,8 +1,7 @@
-# syntax=docker/dockerfile:1.4
 # Stage 1: Build Next.js app
 FROM node:20-alpine AS builder
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@9 --activate
 WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
@@ -24,6 +23,7 @@ FROM node:20-alpine AS runner
 RUN apk add --no-cache curl && rm -rf /var/cache/apk/*
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
 ENV NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /app

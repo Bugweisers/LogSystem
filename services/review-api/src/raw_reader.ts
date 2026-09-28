@@ -101,6 +101,18 @@ export async function readRawLogByPointer(storagePointer: string | null | undefi
 
     return rawBytes.toString("utf-8");
   } catch (err) {
+    // Try remote pipeline daemon which has native libzstd decompression
+    try {
+      const pipelineUrl = process.env.PIPELINE_HTTP_URL || "http://localhost:8000";
+      const remoteRes = await fetch(`${pipelineUrl}/raw?pointer=${encodeURIComponent(storagePointer)}`);
+      if (remoteRes.ok) {
+        const text = await remoteRes.text();
+        if (text) return text;
+      }
+    } catch {
+      // ignore remote error
+    }
+
     console.error(`[raw_reader] Error reading ${storagePointer}:`, err);
     return null;
   }
