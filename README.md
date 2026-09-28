@@ -77,24 +77,54 @@ ulpf/
 - Node.js 20+ with `npm`
 - `make` (optional but recommended)
 
-### One-Line Docker Run (Recommended)
+### 🚀 One-Command Air-Gapped Start (100% Offline)
 
-To spin up all 6 microservices in isolated, hardened containers with one command:
+In strictly isolated, classified, or air-gapped perimeter environments with **zero outbound internet connectivity**, launch the entire 6-microservice stack with a single command:
 
 ```bash
-docker compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.airgap.yml up -d
 ```
+
+> **Air-Gap Security Guarantees:**
+> - **Zero Remote Calls (`pull_policy: never`):** Starts instantaneously from locally built images without querying Docker Hub, npm, or PyPI.
+> - **Network Egress Isolation (`internal: true`):** All service communication is confined strictly to the internal `ulpf-airgap-net` bridge with zero route to the public internet or external DNS.
+> - **Self-Contained Assets:** Zero external CDN calls or Google Fonts (`python tools/check_airgap.py` passes 100%).
 
 | Service | Container Name | Host URL / Port | Health Check |
 |---|---|---|---|
-| **Review UI** (Next.js Dashboard) | `ulpf-review-ui` | `http://localhost:3100` | `http://localhost:3100` |
+| **Review UI** (Analyst Dashboard) | `ulpf-review-ui` | `http://localhost:3100` | `http://localhost:3100` |
+| **Review Queue** (Newest First) | `ulpf-review-ui` | `http://localhost:3100/queue` | `http://localhost:3100/queue` |
 | **Review API** (REST backend) | `ulpf-review-api` | `http://localhost:4000` | `http://localhost:4000/health` |
 | **Ingestion Service** (Syslog / HTTP) | `ulpf-ingestion-svc` | `UDP :5140`, `TCP :5141`, `HTTP :5142` | `http://localhost:5142/health` |
 | **Integrity Service** (Merkle / Ledger) | `ulpf-integrity-svc` | `http://localhost:5143` | `http://localhost:5143/health` |
 | **Pipeline Service** (Parsers / OCSF) | `ulpf-pipeline-svc` | `http://localhost:8000` | `http://localhost:8000/health` |
 | **Sinks Service** (SIEM / Parquet Lake) | `ulpf-sinks-svc` | `http://localhost:8001` | `http://localhost:8001/health` |
 
-To stop the entire stack:
+#### Verify Air-Gap Isolation & Live Health
+```bash
+# Verify static isolation, native typography, and zero-egress socket rules
+python tools/check_airgap.py
+
+# Verify live service health and end-to-end ingestion
+python tools/verify_live.py
+```
+
+#### Stopping the Air-Gapped Stack
+```bash
+docker compose -f docker-compose.yml -f docker-compose.airgap.yml down
+```
+
+---
+
+### Standard Docker Run (With Rebuild)
+
+If building container images from source for the first time on a machine with internet access:
+
+```bash
+docker compose up --build -d
+```
+
+To stop:
 ```bash
 docker compose down
 ```

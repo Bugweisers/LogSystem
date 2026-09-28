@@ -134,6 +134,21 @@ keygen:
 	@echo "✓ Ed25519 dev keypair generated"
 
 # ═══════════════════════════════════════════════════════════
+# Air-Gap Operations
+# ═══════════════════════════════════════════════════════════
+
+airgap-up:
+	docker compose -f docker-compose.yml -f docker-compose.airgap.yml up -d
+	@echo "✓ Air-gapped stack started"
+
+airgap-down:
+	docker compose -f docker-compose.yml -f docker-compose.airgap.yml down
+	@echo "✓ Air-gapped stack stopped"
+
+airgap-check:
+	python tools/check_airgap.py
+
+# ═══════════════════════════════════════════════════════════
 # Clean
 # ═══════════════════════════════════════════════════════════
 
