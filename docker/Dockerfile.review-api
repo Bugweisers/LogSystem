@@ -14,7 +14,7 @@ RUN pnpm install --frozen-lockfile
 COPY packages/contracts/typescript packages/contracts/typescript
 COPY services/review-api services/review-api
 
-RUN pnpm --filter @ulpf/contracts-ts build
+RUN pnpm --filter @ulpf/contracts build
 RUN pnpm --filter @ulpf/review-api build
 
 # Stage 2: Hardened Minimal Runtime

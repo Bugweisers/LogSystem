@@ -18,7 +18,7 @@ COPY packages/contracts/typescript packages/contracts/typescript
 COPY services/ingestion-svc services/ingestion-svc
 
 # Build contracts and ingestion-svc
-RUN pnpm --filter @ulpf/contracts-ts build
+RUN pnpm --filter @ulpf/contracts build
 RUN pnpm --filter @ulpf/ingestion-svc build
 
 # Stage 2: Hardened Minimal Runtime

@@ -31,7 +31,10 @@ def process_events(
     db_path: str = "ulpf.db",
     lineage_file: str | None = None,
 ) -> dict[str, Any]:
-    db_file = REPO_ROOT / db_path
+    if db_path == "ulpf.db" and (REPO_ROOT / "data" / "ulpf.db").exists() and not (REPO_ROOT / "ulpf.db").exists():
+        db_file = REPO_ROOT / "data" / "ulpf.db"
+    else:
+        db_file = REPO_ROOT / db_path
     pub_key_path = REPO_ROOT / "keys" / "dev_signing.pub"
     pub_key = pub_key_path.read_bytes() if pub_key_path.exists() else b""
 

@@ -10,7 +10,7 @@
     "dev:api": "pnpm --filter @ulpf/review-api dev",
     "dev:ingest": "pnpm --filter @ulpf/ingestion-svc dev",
     "start": "pnpm --filter @ulpf/review-ui start",
-    "build": "pnpm -r --filter @ulpf/contracts-ts build",
+    "build": "pnpm -r --filter @ulpf/contracts build",
     "test": "pnpm -r test",
     "test:py": "pytest",
     "test:all": "pnpm -r test && pytest",

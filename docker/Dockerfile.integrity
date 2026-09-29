@@ -14,7 +14,7 @@ RUN pnpm install --frozen-lockfile
 COPY packages/contracts/typescript packages/contracts/typescript
 COPY services/integrity-svc services/integrity-svc
 
-RUN pnpm --filter @ulpf/contracts-ts build
+RUN pnpm --filter @ulpf/contracts build
 RUN pnpm --filter @ulpf/integrity-svc build
 
 # Stage 2: Hardened Minimal Runtime
