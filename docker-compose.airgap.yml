@@ -2,6 +2,13 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.airgap.yml up --build
 # Ensures zero outbound network ingress/egress beyond the local container boundary.
 services:
+  volume-init:
+    pull_policy: never
+    build:
+      pull: false
+    networks:
+      ulpf-airgap-net:
+
   ingestion-svc:
     pull_policy: never
     build:

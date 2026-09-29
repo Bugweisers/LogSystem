@@ -1,5 +1,7 @@
-# === Keys (NEVER commit) ===
-keys/
+# === Keys (production keys should never be committed) ===
+keys/*.pem
+!keys/dev_signing.key
+!keys/dev_signing.pub
 
 # === Python ===
 __pycache__/

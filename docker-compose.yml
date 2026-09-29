@@ -1,4 +1,19 @@
 services:
+  volume-init:
+    image: ulpf-review-api:latest
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.review-api
+      pull: false
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - ulpf_data:/app/data
+    command: ["sh", "-c", "mkdir -p /app/data/raw_store /app/data/lake /app/data/sinks && chmod -R 777 /app/data"]
+    networks:
+      - ulpf-net
+
   ingestion-svc:
     image: ulpf-ingestion-svc:latest
     pull_policy: never
@@ -30,6 +45,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     networks:
       - ulpf-net
 
@@ -62,6 +80,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     networks:
       - ulpf-net
 
@@ -95,6 +116,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     networks:
       - ulpf-net
 
@@ -124,6 +148,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     networks:
       - ulpf-net
 
@@ -159,6 +186,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     networks:
       - ulpf-net
 

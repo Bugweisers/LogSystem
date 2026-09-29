@@ -27,6 +27,7 @@ ENV PORT=5143
 WORKDIR /app
 
 COPY --chown=node:node --from=builder /app /app
+RUN mkdir -p /app/data && chown -R node:node /app/data && chmod 777 /app/data
 RUN chmod 777 /app
 
 USER node
