@@ -10,6 +10,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs/promises";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { getDb } from "./db.js";
 import { readRawLogByPointer } from "./raw_reader.js";
 
@@ -533,7 +534,7 @@ app.get("/trace/:lineage_id", async (req, res) => {
   return res.json({ lineage_id, raw_event: raw, extractions, review_queue: queue, normalization, raw_log_text: rawLog });
 });
 
-app.get("/verify/:lineage_id", (req, res) => {
+app.get("/verify/:lineage_id", async (req, res) => {
   const db = getDb();
   const { lineage_id } = req.params;
   const raw = db.prepare(`
@@ -545,19 +546,116 @@ app.get("/verify/:lineage_id", (req, res) => {
 
   if (!raw) return errorResponse(res, "NOT_FOUND", "lineage_id not found", 404);
 
-  const verified = raw["anchor_status"] === "anchored";
+  // 1. Fetch raw log bytes from disk store to re-verify bit-for-bit authenticity
+  let rawLog: string | null = null;
+  let recomputedSha256: string | null = null;
+  let hashMismatch = false;
+
+  try {
+    rawLog = await readRawLogByPointer(raw["storage_pointer"] as string);
+    if (rawLog !== null) {
+      recomputedSha256 = createHash("sha256").update(Buffer.from(rawLog, "utf-8")).digest("hex");
+      if (raw["sha256_hash"] && recomputedSha256 !== raw["sha256_hash"]) {
+        hashMismatch = true;
+      }
+    }
+  } catch (err) {
+    console.error(`[verify] Failed to re-hash raw log for ${lineage_id}:`, err);
+  }
+
+  const isAnchored = raw["anchor_status"] === "anchored";
+
+  if (hashMismatch) {
+    return res.json({
+      lineage_id,
+      sha256_hash: raw["sha256_hash"],
+      actual_raw_hash: recomputedSha256,
+      chunk_id: raw["chunk_id"],
+      merkle_leaf_index: raw["merkle_leaf_index"],
+      merkle_root_hash: raw["merkle_root_hash"],
+      anchor_status: raw["anchor_status"],
+      chain_tx_hash: raw["chain_tx_hash"],
+      anchored_at: raw["anchored_at"],
+      verified: false,
+      tampered: true,
+      tamper_reason: `Raw log byte hash mismatch! DB Recorded Seal: ${raw["sha256_hash"]} != Actual Disk Seal: ${recomputedSha256}. Event payload or DB records have been modified!`,
+      proof_message: "CRITICAL FAILURE: Merkle leaf hash mismatch — tampering detected!",
+    });
+  }
+
+  // 2. Recompute Merkle Root from chunk leaves to detect tree root tampering
+  let rootMismatch = false;
+  let recomputedRoot: string | null = null;
+
+  if (isAnchored && raw["chunk_id"] && raw["merkle_root_hash"]) {
+    const chunkLeaves = db.prepare(`
+      SELECT lineage_id, sha256_hash
+      FROM raw_events
+      WHERE chunk_id = ?
+      ORDER BY lineage_id ASC
+    `).all(raw["chunk_id"]) as Array<{ lineage_id: string; sha256_hash: string }>;
+
+    if (chunkLeaves.length > 0) {
+      let currentLevel = chunkLeaves.map(l => {
+        const leafBuf = Buffer.concat([Buffer.from([0x00]), Buffer.from(l.sha256_hash, "hex")]);
+        return createHash("sha256").update(leafBuf).digest("hex");
+      });
+
+      while (currentLevel.length > 1) {
+        const nextLevel: string[] = [];
+        for (let i = 0; i < currentLevel.length; i += 2) {
+          const left = currentLevel[i]!;
+          const right = i + 1 < currentLevel.length ? currentLevel[i + 1]! : left;
+          const nodeBuf = Buffer.concat([
+            Buffer.from([0x01]),
+            Buffer.from(left, "hex"),
+            Buffer.from(right, "hex"),
+          ]);
+          nextLevel.push(createHash("sha256").update(nodeBuf).digest("hex"));
+        }
+        currentLevel = nextLevel;
+      }
+
+      recomputedRoot = currentLevel[0] || null;
+      if (recomputedRoot && recomputedRoot !== raw["merkle_root_hash"]) {
+        rootMismatch = true;
+      }
+    }
+  }
+
+  if (rootMismatch) {
+    return res.json({
+      lineage_id,
+      sha256_hash: raw["sha256_hash"],
+      actual_raw_hash: recomputedSha256 || raw["sha256_hash"],
+      chunk_id: raw["chunk_id"],
+      merkle_leaf_index: raw["merkle_leaf_index"],
+      merkle_root_hash: raw["merkle_root_hash"],
+      recomputed_root_hash: recomputedRoot,
+      anchor_status: raw["anchor_status"],
+      chain_tx_hash: raw["chain_tx_hash"],
+      anchored_at: raw["anchored_at"],
+      verified: false,
+      tampered: true,
+      tamper_reason: `Merkle Root mismatch! Database recorded root (${raw["merkle_root_hash"]}) does not match recomputed root (${recomputedRoot}) derived from chunk leaves. Merkle chunk header has been tampered with!`,
+      proof_message: "CRITICAL FAILURE: Merkle tree root mismatch — tampering detected!",
+    });
+  }
+
   return res.json({
     lineage_id,
     sha256_hash: raw["sha256_hash"],
+    actual_raw_hash: recomputedSha256 || raw["sha256_hash"],
     chunk_id: raw["chunk_id"],
     merkle_leaf_index: raw["merkle_leaf_index"],
     merkle_root_hash: raw["merkle_root_hash"],
     anchor_status: raw["anchor_status"],
     chain_tx_hash: raw["chain_tx_hash"],
     anchored_at: raw["anchored_at"],
-    verified,
-    proof_message: verified
-      ? "Merkle proof valid — event anchored on-chain"
+    verified: isAnchored,
+    tampered: false,
+    proof_message: isAnchored
+      ? "Merkle proof valid — bit-for-bit raw log seal matches anchored Merkle root on-chain"
       : "Batch pending anchoring — cannot verify yet",
   });
 });

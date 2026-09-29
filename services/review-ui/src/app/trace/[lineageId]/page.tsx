@@ -180,7 +180,30 @@ function TraceContent() {
       ) : trace && raw ? (
         <>
           {/* Cryptographic Proof Banner */}
-          {verify?.verified ? (
+          {verify?.tampered ? (
+            <div className="notification-banner notification-banner-rose" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(239, 68, 68, 0.12)", border: "1px solid #ef4444", padding: "14px 18px", borderRadius: 8 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#ef4444", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 13, flexShrink: 0, marginTop: 2 }}>
+                  !
+                </div>
+                <div>
+                  <strong style={{ color: "#ef4444", fontSize: 13.5, letterSpacing: "0.5px" }}>CRITICAL SECURITY ALERT: CRYPTOGRAPHIC TAMPER DETECTED</strong>
+                  <div style={{ fontSize: 11.5, color: "var(--text-secondary)", marginTop: 3 }}>
+                    {verify.tamper_reason || "Recorded Merkle leaf SHA-256 seal does not match the recomputed hash of raw storage bytes."}
+                  </div>
+                  {verify.actual_raw_hash && (
+                    <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", marginTop: 6, display: "flex", gap: 16, flexWrap: "wrap" }}>
+                      <span>Recorded DB Seal: <span style={{ textDecoration: "line-through", color: "#f87171", fontWeight: 700 }}>{verify.sha256_hash?.slice(0, 16)}...</span></span>
+                      <span>Actual Disk Seal: <span style={{ color: "#34d399", fontWeight: 700 }}>{verify.actual_raw_hash?.slice(0, 16)}...</span></span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span className="status-tag status-tag-rejected" style={{ background: "#ef4444", color: "#fff", fontWeight: 800, padding: "6px 12px", fontSize: 11, letterSpacing: "0.5px" }}>
+                TAMPER DETECTED
+              </span>
+            </div>
+          ) : verify?.verified ? (
             <div className="notification-banner notification-banner-emerald" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <IconCheck style={{ width: 16, height: 16, color: "var(--accent-emerald)" }} />
@@ -214,7 +237,9 @@ function TraceContent() {
             <div className="panel-card" style={{ padding: 12, gap: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-subtle)", paddingBottom: 6 }}>
                 <span className="label-caps">01 // Raw Ingestion Layer</span>
-                <span className="status-tag status-tag-confirmed" style={{ fontSize: 9 }}>CRC OK</span>
+                <span className={verify?.tampered ? "status-tag status-tag-rejected" : "status-tag status-tag-confirmed"} style={{ fontSize: 9 }}>
+                  {verify?.tampered ? "TAMPER ALERT" : "CRC OK"}
+                </span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 5, fontFamily: "var(--font-mono)", fontSize: 11 }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -442,6 +467,15 @@ function TraceContent() {
                     </div>
                   </div>
                 </div>
+
+                {verify?.tampered && (
+                  <div style={{ background: "rgba(239, 68, 68, 0.1)", border: "1px solid #ef4444", padding: 12, borderRadius: 6, display: "flex", flexDirection: "column", gap: 6, fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                    <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 12 }}>IMMUTABILITY VIOLATION DETECTED:</div>
+                    <div style={{ color: "var(--text-secondary)" }}>
+                      Recomputing SHA-256 over the raw disk chunk yielded <strong style={{ color: "#34d399" }}>{verify.actual_raw_hash}</strong>, which does NOT match the recorded Merkle leaf hash <strong style={{ color: "#f87171" }}>{raw.sha256_hash}</strong>.
+                    </div>
+                  </div>
+                )}
 
                 <div style={{ background: "var(--bg-subtle)", padding: 12, borderRadius: 6, border: "1px solid var(--border-subtle)", fontFamily: "var(--font-mono)", fontSize: 11, display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>

@@ -51,3 +51,18 @@ docker-compose.override.yml
 .env
 .env.local
 .env.*.local
+
+# === Demo, Drill & Live Verification Scripts ===
+tools/iot_live_stream.py
+tools/verify_live.py
+tools/tamper_drill.py
+tools/cli_normalize.py
+tools/*drill*
+tools/*stream*
+tools/*verify*
+
+# === Evaluator, Walkthrough & Presentation Scripts ===
+docs/EVALUATOR_WALKTHROUGH_SCRIPT.md
+docs/*WALKTHROUGH*
+docs/*EVALUATOR*
+docs/*.visual-check.*

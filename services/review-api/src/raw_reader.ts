@@ -38,6 +38,18 @@ const MAX_CACHED_CHUNKS = 50;
 export async function readRawLogByPointer(storagePointer: string | null | undefined): Promise<string | null> {
   if (!storagePointer) return null;
 
+  // 1. First try remote pipeline daemon (which has native C zstandard decompression)
+  try {
+    const pipelineUrl = process.env.PIPELINE_HTTP_URL || "http://pipeline-svc:8000";
+    const remoteRes = await fetch(`${pipelineUrl}/raw?pointer=${encodeURIComponent(storagePointer)}`);
+    if (remoteRes.ok) {
+      const text = await remoteRes.text();
+      if (text) return text;
+    }
+  } catch {
+    // fallback to local decompression
+  }
+
   const match = storagePointer.match(/^raw_store:\/\/([^/]+)\/(offset_\d+)$/);
   if (!match || !match[1] || !match[2]) {
     return null;

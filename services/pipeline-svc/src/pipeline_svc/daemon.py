@@ -75,8 +75,9 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             try:
                 data = json.loads(body.decode("utf-8")) if body else {}
                 lineage_ids = data.get("lineage_ids")
-                from pipeline_svc.worker import process_events
-                res = process_events(lineage_ids=lineage_ids)
+                with _process_lock:
+                    from pipeline_svc.worker import process_events
+                    res = process_events(lineage_ids=lineage_ids)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -96,8 +97,36 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+import threading
+import time
+
+_process_lock = threading.Lock()
+
+
+def _background_worker_loop() -> None:
+    """Continuously processes unextracted events from raw_events in real time."""
+    time.sleep(2.0)
+    while True:
+        try:
+            if _process_lock.acquire(blocking=False):
+                try:
+                    from pipeline_svc.worker import process_events
+                    res = process_events()
+                    cnt = res.get("processed_count", 0)
+                    if cnt > 0:
+                        print(f"[PIPELINE-DAEMON] Real-time engine auto-processed {cnt} event(s)", flush=True)
+                finally:
+                    _process_lock.release()
+        except Exception:
+            pass
+        time.sleep(1.0)
+
+
 def main() -> None:
     print(f"pipeline-svc daemon starting on port {PORT}...")
+    worker_thread = threading.Thread(target=_background_worker_loop, daemon=True)
+    worker_thread.start()
+
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
     try:
         server.serve_forever()
