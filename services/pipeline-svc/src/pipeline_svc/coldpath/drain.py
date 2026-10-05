@@ -260,7 +260,10 @@ class DrainParser:
                 k_clean = k.strip().lower()
                 if "src" in k_clean and ("ip" in k_clean or "addr" in k_clean or "host" in k_clean):
                     extracted["src_ip"] = val
-                elif ("dst" in k_clean or "dest" in k_clean) and ("ip" in k_clean or "addr" in k_clean or "host" in k_clean):
+                elif (
+                    ("dst" in k_clean or "dest" in k_clean)
+                    and ("ip" in k_clean or "addr" in k_clean or "host" in k_clean)
+                ):
                     extracted["dst_ip"] = val
                 elif "src" in k_clean and ("port" in k_clean or "spt" in k_clean):
                     extracted["src_port"] = val

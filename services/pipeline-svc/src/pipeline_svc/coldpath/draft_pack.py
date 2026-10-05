@@ -39,12 +39,14 @@ def template_to_regex(template: str, sample_log: str | None = None) -> str:
         tokens = sample_log.split()
         if len(kv_pairs) >= 4 or (len(kv_pairs) >= 2 and len(kv_pairs) / max(1, len(tokens)) >= 0.4):
             parts = []
-            for k, q1, q2, unq in kv_pairs:
+            for k, _q1, _q2, _unq in kv_pairs:
                 k_esc = re.escape(k)
                 k_clean = k.strip().lower()
                 if "src" in k_clean and ("ip" in k_clean or "addr" in k_clean or "host" in k_clean):
                     var_name = "src_ip"
-                elif ("dst" in k_clean or "dest" in k_clean) and ("ip" in k_clean or "addr" in k_clean or "host" in k_clean):
+                elif ("dst" in k_clean or "dest" in k_clean) and (
+                    "ip" in k_clean or "addr" in k_clean or "host" in k_clean
+                ):
                     var_name = "dst_ip"
                 elif "src" in k_clean and ("port" in k_clean or "spt" in k_clean):
                     var_name = "src_port"
@@ -64,7 +66,7 @@ def template_to_regex(template: str, sample_log: str | None = None) -> str:
             return r".*?" + r".*?".join(parts) + r".*"
 
     template_tokens = template.split()
-    sample_tokens = sample_log.split() if sample_log else []
+    sample_tokens: list[str] = sample_log.split() if sample_log else []
 
     parts: list[str] = []
     ip_count = 0

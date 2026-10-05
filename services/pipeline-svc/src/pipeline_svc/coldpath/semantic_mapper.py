@@ -76,7 +76,10 @@ KNOWN_ACTIONS = {
     "accept", "accepted", "built", "teardown", "close", "closed", "reset", "failed",
 }
 KNOWN_HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "options"}
-RE_USER_AGENT_HINT = re.compile(r"(mozilla|gecko|webkit|chrome|safari|firefox|edge|opera|curl|wget|python|httpclient|postman|go-http|compatible;)", re.I)
+RE_USER_AGENT_HINT = re.compile(
+    r"(mozilla|gecko|webkit|chrome|safari|firefox|edge|opera|curl|wget|python|httpclient|postman|go-http|compatible;)",
+    re.I,
+)
 
 
 def check_type_compatibility(attr: str, value: str) -> float:
@@ -127,13 +130,14 @@ class SemanticMapper:
         self.attributes = list(OCSF_VOCABULARY.keys())
         self.doc_corpus = [" ".join(OCSF_VOCABULARY[attr]) for attr in self.attributes]
 
+        self.vectorizer: Any | None = None
+        self.tfidf_matrix: Any | None = None
+
         if HAS_SKLEARN and TfidfVectorizer is not None:
             # Initialize TF-IDF vectorizer over character n-grams (3-5) and word n-grams
             self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5))
             self.tfidf_matrix = self.vectorizer.fit_transform(self.doc_corpus)
         else:
-            self.vectorizer = None
-            self.tfidf_matrix = None
             self._init_pure_python_tfidf()
         self._sim_cache: dict[str, dict[str, float]] = {}
 
@@ -236,12 +240,13 @@ class SemanticMapper:
             clean_val = raw_value.strip().strip("\"'\\").lower()
             if attr == "connection_info.protocol_name" and clean_val in KNOWN_PROTOCOLS:
                 composite = max(composite, 0.98)
-            elif attr == "action" and (clean_val in KNOWN_ACTIONS or any(t in k_lower for t in ("action", "subtype", "status"))):
+            elif attr == "action" and (
+                clean_val in KNOWN_ACTIONS or any(t in k_lower for t in ("action", "subtype", "status"))
+            ):
                 composite = max(composite, 0.95)
-            elif attr in ("src_endpoint.ip", "dst_endpoint.ip") and type_score == 1.0:
+            elif attr in ("src_endpoint.ip", "dst_endpoint.ip") and type_score == 1.0 and lex_score < 0.2:
                 # If key is generic (var_N, etc.) but value is an IP, don't let score collapse
-                if lex_score < 0.2:
-                    composite = max(composite, 0.90 if not any(t in k_lower for t in ("dst", "to")) else 0.88)
+                composite = max(composite, 0.90 if not any(t in k_lower for t in ("dst", "to")) else 0.88)
 
             composite = max(0.0, min(1.0, composite))
             scored_candidates.append((attr, composite, lex_score, type_score))

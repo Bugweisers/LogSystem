@@ -1,7 +1,9 @@
 """HTTP daemon and background runner for pipeline-svc."""
+import contextlib
 import http.server
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -10,7 +12,11 @@ PORT = int(os.environ.get("PORT", "8000"))
 
 
 class QuietThreadingHTTPServer(http.server.ThreadingHTTPServer):
-    def handle_error(self, request, client_address):
+    def handle_error(
+        self,
+        request: socket.socket | tuple[bytes, socket.socket],
+        client_address: tuple[str, int] | str,
+    ) -> None:
         ex = sys.exception()
         if isinstance(ex, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
             return
@@ -19,16 +25,12 @@ class QuietThreadingHTTPServer(http.server.ThreadingHTTPServer):
 
 class HealthHandler(http.server.BaseHTTPRequestHandler):
     def handle(self) -> None:
-        try:
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             super().handle()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
 
     def finish(self) -> None:
-        try:
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             super().finish()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
 
     def do_GET(self) -> None:
         try:
@@ -129,6 +131,16 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 data = json.loads(body.decode("utf-8")) if body else {}
                 cluster_id = data.get("cluster_id")
+                if not isinstance(cluster_id, str) or not cluster_id:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Connection", "close")
+                    err_b = b'{"error": "Missing or invalid cluster_id"}'
+                    self.send_header("Content-Length", str(len(err_b)))
+                    self.end_headers()
+                    self.wfile.write(err_b)
+                    return
+
                 actor = data.get("actor", "analyst")
                 confirmed_mapping = data.get("confirmed_mapping") or data.get("overrides")
                 with _process_lock:

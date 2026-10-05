@@ -63,13 +63,17 @@ jobs:
           node-version: 20
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - name: Install Node Dependencies
         run: |
           pnpm install --frozen-lockfile
+
+      - name: Build Shared Contracts
+        run: |
+          pnpm --filter @ulpf/contracts build
 
       - name: TypeScript Typecheck (Zero Errors)
         run: |

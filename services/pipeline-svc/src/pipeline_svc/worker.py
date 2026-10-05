@@ -6,6 +6,7 @@ OCSF Normalization engine, and Cold-Path Drain/SemanticMapper/ConfidenceGate.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sqlite3
@@ -244,11 +245,12 @@ def process_events(
                 if cur.rowcount == 0:
                     from datetime import datetime
                     now_str = datetime.now(UTC).isoformat()
+                    empty_alts: list[dict[str, Any]] = []
                     cand = {
                         k: {
                             "candidate_ocsf_attribute": k,
                             "similarity_score": envelope.confidence_scores.get(k, 0.85),
-                            "alternate_candidates": [],
+                            "alternate_candidates": empty_alts,
                         }
                         for k in envelope.extracted_fields
                     }
@@ -278,10 +280,8 @@ def process_events(
 
         conn.execute("COMMIT")
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             conn.execute("ROLLBACK")
-        except Exception:
-            pass
         raise
 
     conn.close()
@@ -294,7 +294,8 @@ def onboard_cluster(
     confirmed_mapping: dict[str, Any] | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Promotes a cluster by generating a named regex pack, signing with Ed25519, writing YAML to disk, and RCU hot-reloading."""
+    """Promotes a cluster by generating a named regex pack, signing with Ed25519,
+    writing YAML to disk, and RCU hot-reloading."""
     resolved_db = db_path or os.environ.get("DB_PATH") or "ulpf.db"
     db_file = Path(resolved_db) if Path(resolved_db).is_absolute() else REPO_ROOT / resolved_db
 
@@ -341,7 +342,9 @@ def onboard_cluster(
                 offset_key = parts[1]
                 data_dir_env = os.environ.get("DATA_DIR")
                 raw_store_dir = Path(data_dir_env) / "raw_store" if data_dir_env else (
-                    Path("/app/data/raw_store") if Path("/app/data/raw_store").exists() else REPO_ROOT / "data" / "raw_store"
+                    Path("/app/data/raw_store")
+                    if Path("/app/data/raw_store").exists()
+                    else REPO_ROOT / "data" / "raw_store"
                 )
                 idx_file = raw_store_dir / f"{chunk_id}.idx.json"
                 zst_file = raw_store_dir / f"{chunk_id}.zst"
@@ -360,7 +363,11 @@ def onboard_cluster(
     if not sample_log and row:
         raw_row = conn.execute("SELECT * FROM raw_events WHERE lineage_id = ?", (row["lineage_id"],)).fetchone()
         if raw_row:
-            sample_log = f"source_ip={raw_row['source_ip']} port={raw_row['source_port']} proto={raw_row['transport_protocol']}"
+            sample_log = (
+                f"source_ip={raw_row['source_ip']} "
+                f"port={raw_row['source_port']} "
+                f"proto={raw_row['transport_protocol']}"
+            )
 
     from pipeline_svc.coldpath.draft_pack import DraftPackGenerator
     from pipeline_svc.coldpath.drain import DrainParser

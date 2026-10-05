@@ -167,7 +167,14 @@ class AutoOnboarder:
                     (cluster_id,),
                 ).fetchone()
                 # Allow self-confirmation, re-generation, or generic analyst actor
-                if q_row and q_row[0] and actor not in ("analyst", "system", q_row[0]) and q_row[0] not in ("analyst", "system", actor):
-                    raise ConflictError(f"Cluster {cluster_id} is already confirmed by another analyst ({q_row[0]}) (409)")
+                if (
+                    q_row
+                    and q_row[0]
+                    and actor not in ("analyst", "system", q_row[0])
+                    and q_row[0] not in ("analyst", "system", actor)
+                ):
+                    raise ConflictError(
+                        f"Cluster {cluster_id} is already confirmed by another analyst ({q_row[0]}) (409)"
+                    )
         except sqlite3.OperationalError:
             pass

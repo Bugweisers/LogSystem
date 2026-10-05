@@ -130,7 +130,7 @@ def canonicalize_timestamp(ts_val: int | float | str | None) -> int:
             return int(val)
         return int(val / 1000)  # microseconds or nanoseconds
 
-    ts_str = str(ts_val).strip()
+    ts_str = ts_val.strip()
     if not ts_str:
         raise ValueError("Empty timestamp string")
 
@@ -262,7 +262,7 @@ def crosswalk_to_ocsf_dict(
     # Heuristic discovery fallback: If endpoints are missing, scan extracted fields
     if src_ip is None or dst_ip is None:
         discovered_eps: list[tuple[str, int | None]] = []
-        for k, v in fields.items():
+        for _k, v in fields.items():
             if not isinstance(v, str):
                 continue
             clean_v = v.strip().strip("\"'")
@@ -311,7 +311,7 @@ def crosswalk_to_ocsf_dict(
     # 2. Connection Info
     proto_str = fields.get("protocol") or fields.get("proto") or fields.get("transport")
     if not proto_str:
-        for k, v in fields.items():
+        for _k, v in fields.items():
             if isinstance(v, str) and v.strip().lower() in ("tcp", "udp", "icmp", "gre", "esp", "ip"):
                 proto_str = v.strip().lower()
                 break
@@ -324,7 +324,7 @@ def crosswalk_to_ocsf_dict(
     # 3. Activity & Severity
     action_val = fields.get("action") or fields.get("disposition") or fields.get("act")
     if not action_val:
-        for k, v in fields.items():
+        for _k, v in fields.items():
             if isinstance(v, str) and v.strip().lower() in (
                 "deny", "denied", "drop", "dropped", "block", "blocked",
                 "permit", "permitted", "allow", "allowed", "built", "teardown", "accept", "refuse",
